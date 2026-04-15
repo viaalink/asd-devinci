@@ -1,5 +1,36 @@
 # CLAUDE.md
 
+## FDAID (Feedback-Driven AI Development) — v2
+
+> SSOT: `ext/asd-ai/CLAUDE.md` — update there first, then propagate.
+
+SPEC → EXECUTE → EVAL → TRACE → GATE → COMMIT → LEARN
+
+1. **SPEC** — Task contract before code: goal, start_state, expected_state, disallowed, eval_method, pass_threshold.
+2. **EXECUTE** — Small increment. One concern at a time.
+3. **EVAL** — Layered proof (deterministic → scenario → production-derived regression).
+4. **TRACE** — Every significant run produces captured output.
+5. **GATE** — Explicit release conditions pass before commit/merge.
+6. **COMMIT** — Gate passes. ShellCheck clean + self-test green.
+7. **LEARN** — Failed evals → new eval cases. Production incidents → eval backlog.
+
+### Eval Layers (Project-Specific)
+
+| Layer | Prove what | How |
+|-------|-----------|-----|
+| Static | Shell scripts are valid | ShellCheck (CI workflow) |
+| Self-test | Action works end-to-end | `.github/workflows/devinci.yml` self-test |
+| CI | Nothing broke upstream | `gh run list` |
+
+### Working Rules
+
+- **Spec first** — Task contract before code.
+- **Trace everything** — Capture CI output.
+- **Gate before merge** — ShellCheck + self-test green.
+- **Never skip gates** — Document and escalate failures.
+
+---
+
 ## Overview
 
 **asd-devinci** (DevInCi = Dev in CI) is a reusable GitHub Composite Action that spins up a full development environment inside GitHub Actions runners with web terminal (ttyd), VS Code (code-server), and ASD tunnel access. Just click the URL to connect.
