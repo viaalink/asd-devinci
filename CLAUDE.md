@@ -43,7 +43,7 @@ asd-devinci/
 ├── scripts/
 │   ├── lib/
 │   │   └── ci.sh                      # CI platform abstraction layer
-│   ├── setup.sh                       # Download + install ASD CLI (cross-platform)
+│   ├── setup.sh                       # Download + install the Viaalink CLI (`via`, cross-platform)
 │   ├── provision.sh                   # Provision tunnel credentials (3 modes)
 │   ├── start-interface.sh             # Start ttyd or code-server
 │   └── connect.sh                     # Connect tunnel + generate URLs
@@ -58,20 +58,20 @@ asd-devinci/
 
 ## How It Works
 
-1. Installs ASD CLI from GitHub releases (cross-platform: Linux, macOS, Windows)
+1. Installs the Viaalink CLI (`via`; `asd` stays available as an alias) from GitHub releases (cross-platform: Linux, macOS, Windows)
 2. Provisions tunnel credentials (3 modes):
    - **Pre-existing credentials**: `client-id` + `client-secret` provided, skips API calls
    - **API key mode** (recommended): calls `credential-provision` with `X-API-Key` header
    - **Ephemeral mode** (fallback): calls `create-ephemeral-token` (no auth, limited)
 3. Starts interface (ttyd web terminal or code-server VS Code)
-4. Connects tunnel via `asd expose` with provisioned credentials
+4. Connects tunnel via `via expose` with provisioned credentials
 5. Outputs clickable URL with embedded basic auth credentials
 
 ## Key Design Decisions
 
 - **CI-agnostic scripts**: Scripts use `scripts/lib/ci.sh` abstraction layer (shared with GitLab component in separate repo)
 - **No hardcoded defaults** for tunnel-host/tunnel-port: always read from API response or explicit input
-- **No hardcoded port defaults**: Ports come from tpl.env / asd env init, parsed from asd start output
+- **No hardcoded port defaults**: Ports come from tpl.env / via env init, parsed from via start output
 - **X-API-Key header** for API key auth (not Authorization: Bearer)
 - **API endpoint** defaults to `https://api.asd.host` (not raw Supabase URL)
 - **Server discovery from API**: tunnel_host, tunnel_port, ownership_type all returned by API
@@ -95,9 +95,9 @@ asd-devinci/
 - `interface`: `ttyd` (terminal) or `codeserver` (VS Code)
 - `tunnel-name`: Custom subdomain prefix (default: short SHA)
 - `tunnel-host` / `tunnel-port`: Optional overrides (auto-detected from API)
-- `direct`: Use `--direct` flag for asd expose
+- `direct`: Use `--direct` flag for via expose
 - `ttl-minutes`: Token TTL in minutes (0 = no expiry, API key mode only)
-- `asd-version`: ASD CLI release tag (default: `latest`)
+- `asd-version`: Viaalink CLI release tag (default: `latest`)
 
 ## Related
 
