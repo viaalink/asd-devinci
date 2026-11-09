@@ -2,7 +2,7 @@
 
 A browser terminal (ttyd) or VS Code (code-server) on your CI runner, published through your own Viaalink Relay, behind a login. Start it from your laptop, open the link, and you are working inside the runner: the checked-out repository, the toolchain and the environment your pipeline sees. Useful to debug a job that only fails in CI, or to work on a machine you do not have locally. Nothing is opened on the runner itself: it connects out to your relay over SSH, and the relay serves the session under its own domain.
 
-> **Coming with the v2 release.** `via ci install` and `uses: viaalink/ci-terminal@v2` below become available with v2 of this action and the matching Viaalink CLI release. Until then the command is `via devinci install`, which installs a self-contained workflow (it does not use this action) that `via gh terminal` starts the same way.
+> **The CLI command.** `uses: viaalink/ci-terminal@v2` works today. The `via ci install` command that writes this workflow for you comes with the next Viaalink CLI release; until then the command is `via devinci install`, which installs a self-contained workflow that `via gh terminal` starts the same way.
 
 ## Quick start
 
@@ -188,8 +188,6 @@ The session works the same on self-hosted runners: choose `self-hosted` as the o
 - [Viaalink](https://viaalink.com)
 - [Viaalink Relay plans](https://viaalink.com/relay#plans)
 - [Viaalink CLI](https://github.com/viaalink/cli)
-- Documentation: TODO (link once the docs page exists)
-- Videos: TODO (install, set up and use · start, stop and manage a session · on your own runners)
 
 ## License
 

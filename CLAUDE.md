@@ -34,7 +34,7 @@ SPEC → EXECUTE → EVAL → TRACE → GATE → COMMIT → LEARN
 
 ## Overview
 
-**Viaalink CI Terminal** (repo `viaalink/asd-devinci`, to be renamed `viaalink/ci-terminal`; formerly "DevInCi") is a reusable GitHub Composite Action that puts a browser terminal (ttyd) or VS Code (code-server) on a CI runner and publishes it through the user's own Viaalink Relay, behind a login. There is no default relay (eu.viaal.ink is a production relay, but never a default).
+**Viaalink CI Terminal** (repo `viaalink/ci-terminal`, renamed from `viaalink/asd-devinci`; formerly "DevInCi") is a reusable GitHub Composite Action that puts a browser terminal (ttyd) or VS Code (code-server) on a CI runner and publishes it through the user's own Viaalink Relay, behind a login. There is no default relay (eu.viaal.ink is a production relay, but never a default).
 
 ## Structure
 
