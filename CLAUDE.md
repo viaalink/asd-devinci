@@ -19,7 +19,7 @@ SPEC → EXECUTE → EVAL → TRACE → GATE → COMMIT → LEARN
 | Layer | Prove what | How |
 |-------|-----------|-----|
 | Static | Shell scripts are valid | ShellCheck (CI workflow) |
-| Self-test | Action works end-to-end | `.github/workflows/devinci.yml` self-test |
+| Self-test | Action works end-to-end | `.github/workflows/self-test.yml` (needs the relay key secrets) |
 | CI | Nothing broke upstream | `gh run list` |
 
 ### Working Rules
@@ -33,23 +33,25 @@ SPEC → EXECUTE → EVAL → TRACE → GATE → COMMIT → LEARN
 
 ## Overview
 
-**asd-devinci** (DevInCi = Dev in CI) is a reusable GitHub Composite Action that spins up a full development environment inside GitHub Actions runners with web terminal (ttyd), VS Code (code-server), and ASD tunnel access. Just click the URL to connect.
+**Viaalink CI Terminal** (repo `viaalink/asd-devinci`, to be renamed `viaalink/ci-terminal`; formerly "DevInCi") is a reusable GitHub Composite Action that puts a browser terminal (ttyd) or VS Code (code-server) on a CI runner and publishes it through the user's own Viaalink Relay, behind a login. There is no default relay and no hosted provisioning API.
 
 ## Structure
 
 ```
-asd-devinci/
+.
 ├── action.yml                         # Composite action definition
 ├── scripts/
 │   ├── lib/
 │   │   └── ci.sh                      # CI platform abstraction layer
 │   ├── setup.sh                       # Download + install the Viaalink CLI (`via`, cross-platform)
-│   ├── provision.sh                   # Provision tunnel credentials (3 modes)
+│   ├── provision.sh                   # Check relay credentials (key / password / legacy API)
 │   ├── start-interface.sh             # Start ttyd or code-server
-│   └── connect.sh                     # Connect tunnel + generate URLs
+│   ├── connect.sh                     # `via expose`, read the URL back, outputs + summary
+│   └── keepalive.sh                   # Hold the session, clean up on cancel
 ├── .github/workflows/
-│   ├── ci.yml                         # CI pipeline (shellcheck)
-│   └── devinci.yml                    # Self-test workflow
+│   ├── ci.yml                         # CI pipeline (shellcheck, action.yml parses)
+│   ├── self-test.yml                  # Self-test workflow (relay key secrets)
+│   └── release.yml                    # Tag → release + moving major tag
 ├── README.md
 ├── CLAUDE.md
 ├── LICENSE
@@ -58,46 +60,35 @@ asd-devinci/
 
 ## How It Works
 
-1. Installs the Viaalink CLI (`via`; `asd` stays available as an alias) from GitHub releases (cross-platform: Linux, macOS, Windows)
-2. Provisions tunnel credentials (3 modes):
-   - **Pre-existing credentials**: `client-id` + `client-secret` provided, skips API calls
-   - **API key mode** (recommended): calls `credential-provision` with `X-API-Key` header
-   - **Ephemeral mode** (fallback): calls `create-ephemeral-token` (no auth, limited)
-3. Starts interface (ttyd web terminal or code-server VS Code)
-4. Connects tunnel via `via expose` with provisioned credentials
-5. Outputs clickable URL with embedded basic auth credentials
+1. Installs the Viaalink CLI (`via`; `asd` stays available as an alias) from the `viaalink/cli` GitHub releases into the 3.2 data directory (`via/bin`). Needs CLI 3.2 or newer.
+2. Checks relay credentials, in this order:
+   - **Relay key** (recommended): `tunnel-key` + `tunnel-key-id` + `tunnel-host` (+ optional `tunnel-port`), the values `via auth export` prints, stored as `ASD_TUNNEL_KEY`, `ASD_TUNNEL_KEY_ID`, `ASD_TUNNEL_HOST`, `ASD_TUNNEL_PORT` secrets.
+   - **Password login**: `client-id` + `client-secret` + `tunnel-host` + `tunnel-port`.
+   - **Legacy provisioning API**: `api-key` or ephemeral, only when `api-endpoint` is set explicitly (no default; api.asd.host is gone).
+3. Starts the interface (`via ttyd start` or `via codeserver start`).
+4. Publishes with `via expose <port> <name>` and reads the URL back from `via expose list --json` (never assembled by hand: shared and dedicated relays shape hostnames differently).
+5. Uploads the `tunnel-url` artifact (`via gh terminal` reads it), then keeps the job alive until the run is cancelled.
 
 ## Key Design Decisions
 
 - **CI-agnostic scripts**: Scripts use `scripts/lib/ci.sh` abstraction layer (shared with GitLab component in separate repo)
-- **No hardcoded defaults** for tunnel-host/tunnel-port: always read from API response or explicit input
-- **No hardcoded port defaults**: Ports come from tpl.env / via env init, parsed from via start output
-- **X-API-Key header** for API key auth (not Authorization: Bearer)
-- **API endpoint** defaults to `https://api.asd.host` (not raw Supabase URL)
-- **Server discovery from API**: tunnel_host, tunnel_port, ownership_type all returned by API
-- **Ownership-aware URLs**: shared = `name-clientid.host`, dedicated = `name.host`
-- **--direct flag**: optional bypass of Caddy proxy via `direct` input
+- **No default relay**: credentials always come from inputs; there is no fallback host
+- **No hardcoded port defaults**: Ports come from tpl.env / `via env init`, parsed from `via ttyd|codeserver start` output
+- **Env var names**: the CLI still reads `ASD_*` (ASD_TUNNEL_*, ASD_TTYD_*, ASD_BIN_DIR); do not invent `VIA_*` aliases here
+- **direct**: optional `--direct` for `via expose` (skips the login in front)
 
 ## Consumer Usage
 
 ```yaml
-- uses: asd-engineering/asd-devinci@v1
+- uses: viaalink/ci-terminal@v2
   with:
-    api-key: ${{ secrets.ASD_API_KEY }}
-    tunnel-name: debug-${{ github.run_id }}
-    ttl-minutes: 15
+    tunnel-key: ${{ secrets.ASD_TUNNEL_KEY }}
+    tunnel-key-id: ${{ secrets.ASD_TUNNEL_KEY_ID }}
+    tunnel-host: ${{ secrets.ASD_TUNNEL_HOST }}
+    tunnel-port: ${{ secrets.ASD_TUNNEL_PORT }}
 ```
 
-## Key Inputs
-
-- `api-key`: ASD API key with `cicd:provision` scope (recommended)
-- `client-id` + `client-secret`: Pre-existing credentials (skips provisioning)
-- `interface`: `ttyd` (terminal) or `codeserver` (VS Code)
-- `tunnel-name`: Custom subdomain prefix (default: short SHA)
-- `tunnel-host` / `tunnel-port`: Optional overrides (auto-detected from API)
-- `direct`: Use `--direct` flag for via expose
-- `ttl-minutes`: Token TTL in minutes (0 = no expiry, API key mode only)
-- `asd-version`: Viaalink CLI release tag (default: `latest`)
+`viaalink/ci-terminal@v2` resolves only after the repo rename and a v2 tag.
 
 ## Related
 
