@@ -18,13 +18,14 @@ ci_group_start "Publishing through the relay"
 on_exit() {
   local rc=$?
   if [ "$rc" -ne 0 ]; then
-    cleanup_session
+    CLEANUP_BY="the publish step (failed)" cleanup_session
   fi
 }
 trap on_exit EXIT
 
 touch "${STATE_DIR}/exposed"
 via expose "$SESSION_TARGET" "$SESSION_NAME"
+note_caddy_started
 
 # The hostname depends on the relay (a shared relay appends the client id, a
 # dedicated one does not), so it is read back from the CLI, never assembled.

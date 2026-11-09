@@ -13,7 +13,7 @@ source "${SCRIPTS_DIR}/cleanup.sh"
 on_exit() {
   local rc=$?
   if [ "$rc" -ne 0 ]; then
-    cleanup_session
+    CLEANUP_BY="the start step (failed)" cleanup_session
   fi
 }
 trap on_exit EXIT
@@ -46,6 +46,7 @@ if [ -f .env ]; then
   cp -p .env "${STATE_DIR}/env.backup"
 fi
 touch "${STATE_DIR}/env-seeded"
+note_caddy_before
 {
   echo "ASD_BASIC_AUTH_USERNAME=${SESSION_USERNAME}"
   echo "ASD_BASIC_AUTH_PASSWORD=$(envq "$SESSION_PASSWORD")"
@@ -69,6 +70,7 @@ else
   via ttyd start
   PORT_VAR=ASD_TTYD_PORT
 fi
+note_caddy_started
 
 # What via expose publishes: on Linux/macOS the web terminal listens on its
 # socket, not a port, so the service itself (via expose ttyd <name>);

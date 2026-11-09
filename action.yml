@@ -191,14 +191,19 @@ runs:
         SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
         SESSION_TIMEOUT_MINUTES: ${{ steps.credentials.outputs.timeout_minutes }}
         DEPLOY_ID: ${{ steps.connect.outputs.deploy_id }}
+        # The login as real env, as in the steps before: via expose stop
+        # must not depend on the compiled binary's .env load.
+        ASD_BASIC_AUTH_USERNAME: ${{ inputs.username }}
+        ASD_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
         ASD_NON_INTERACTIVE: '1'
         ASD_WORKSPACE_DIR: ${{ github.workspace }}/workspace
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
 
-    # Runs whatever the steps above could not: stop the tunnel and the
-    # interface, restore (or remove) .env, mark the deployment inactive.
-    # A no-op when the session already ended cleanly.
+    # Runs whatever the steps above could not: stop the exposure, the
+    # interface and the Caddy this action started, restore (or remove) .env,
+    # mark the deployment inactive. Logs each thing it does, or why there
+    # was nothing left to do.
     - name: End the session
       if: always()
       shell: bash
@@ -208,6 +213,8 @@ runs:
         STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
         SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
         DEPLOY_ID: ${{ steps.connect.outputs.deploy_id }}
+        ASD_BASIC_AUTH_USERNAME: ${{ inputs.username }}
+        ASD_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
         ASD_NON_INTERACTIVE: '1'
         ASD_WORKSPACE_DIR: ${{ github.workspace }}/workspace
         GITHUB_TOKEN: ${{ github.token }}

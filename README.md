@@ -123,11 +123,12 @@ A session also ends when you cancel the run on GitHub, when the action's `timeou
 
 On the way out, and also when a step of the action fails, the action:
 
-- stops the tunnel and the terminal or VS Code server;
+- stops the exposure (`via expose stop`), so the relay address is no longer public, and the terminal or VS Code server;
+- stops Caddy if the action started it (a Caddy that was already running is left alone);
 - puts back the repository's own `.env` exactly as it was before the session (the login lines and whatever `via init` added are gone), or removes `.env` if the repository had none;
 - marks the deployment inactive.
 
-A final `if: always()` step repeats this for anything a cancelled step could not finish. Other files the session created (`via init` output, the `workspace/` directory, anything you made in the terminal) stay.
+The log has one `[cleanup]` line for each of these, or says why there was nothing to do. A final `if: always()` step repeats this for anything a cancelled step could not finish. Other files the session created (`via init` output, the `workspace/` directory, anything you made in the terminal) stay.
 
 ## Your own runners
 

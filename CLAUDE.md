@@ -19,6 +19,7 @@ SPEC → EXECUTE → EVAL → TRACE → GATE → COMMIT → LEARN
 | Layer | Prove what | How |
 |-------|-----------|-----|
 | Static | Shell scripts are valid | ShellCheck (CI workflow) |
+| Cancel | Session really ends on cancel / kill | `bash tests/cancel.sh` (stub CLI, CI workflow) |
 | Self-test | Action works end-to-end | `.github/workflows/self-test.yml` (needs the VIA_* secrets) |
 | CI | Nothing broke upstream | `gh run list` |
 
@@ -82,8 +83,12 @@ started, published or stopped goes here first, then the CLI wrapper follows.
    `tunnel-url.txt` from it), then keeps the job alive until cancel, job timeout
    or the `timeout-minutes` input.
 6. `cleanup.sh` (from the failing step's trap, keepalive's trap and a final
-   `if: always()` step): stop tunnel and interface, restore the repository's
-   `.env` from the backup (or remove it), deployment inactive.
+   `if: always()` step): stop the exposure, the interface and the Caddy the
+   action started, restore the repository's `.env` from the backup (or remove
+   it), deployment inactive. One `[cleanup]` log line per part; each part's
+   marker is removed when done, so a killed cleanup leaves the rest to the
+   next caller. keepalive.sh kills its background sleep first: left alive it
+   holds the step's output open and the trap's log is lost.
    Session state (backup, markers, URL file) lives in `$RUNNER_TEMP/ci-terminal-<session>`;
    steps pass values as step outputs, never `$GITHUB_ENV`.
 
