@@ -5,216 +5,68 @@ SCRIPTS_DIR="${SCRIPTS_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 # shellcheck source=lib/ci.sh
 source "${SCRIPTS_DIR}/lib/ci.sh"
 
-INTERFACE="${INTERFACE_TYPE:-ttyd}"
-ci_group_start "Starting the session interface (${INTERFACE})"
+# Port of the CLI terminal workflow's "Start the interface" step. The username
+# and password were checked by credentials.sh. The login also reaches this
+# step as step env (ASD_BASIC_AUTH_*, ASD_TTYD_*, ASD_CODESERVER_*), so the
+# CLI does not depend on reading it back from .env.
 
-# Generate password if not provided
-if [ -z "${SESSION_PASSWORD:-}" ]; then
-  SESSION_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
-  ci_mask "${SESSION_PASSWORD}"
-fi
+ci_group_start "Starting the session interface (${SESSION_INTERFACE})"
 
-# Set defaults
-SESSION_USERNAME="${SESSION_USERNAME:-via}"
-SESSION_SHELL="${SESSION_SHELL:-bash}"
+# A .env value, double-quoted with \ " $ ` escaped: the CLI's .env reader and
+# bash `source` both read back exactly what was written.
+envq() {
+  local v=$1
+  v=${v//\\/\\\\}
+  v=${v//\"/\\\"}
+  v=${v//\$/\\\$}
+  v=${v//\`/\\\`}
+  printf '"%s"' "$v"
+}
 
-# Export for subsequent steps (using generic names)
-ci_set_env "SESSION_PASSWORD" "${SESSION_PASSWORD}"
-ci_set_env "SESSION_USERNAME" "${SESSION_USERNAME}"
-ci_set_env "SESSION_SHELL" "${SESSION_SHELL}"
-
-# Export the ttyd env vars the CLI reads
-ci_set_env "ASD_TTYD_PASSWORD" "${SESSION_PASSWORD}"
-ci_set_env "ASD_TTYD_USERNAME" "${SESSION_USERNAME}"
-ci_set_env "ASD_TTYD_SHELL_CMD" "${SESSION_SHELL}"
-
-# Initialize the CLI workspace (creates workspace directory, .env file)
-export ASD_NON_INTERACTIVE=1
-export CI=true
-
-# Ensure ASD_BIN_DIR is set (from setup.sh step)
-# This tells the CLI where to find helper binaries like ttyd, caddy, etc.
-if [ -z "${ASD_BIN_DIR:-}" ]; then
-  # Fallback: determine based on OS
-  if [ "$(uname)" = "Darwin" ]; then
-    ASD_BIN_DIR="${HOME}/Library/Application Support/via/bin"
-  else
-    ASD_BIN_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/via/bin"
+# Seed .env first: via init keeps values that are already there. Appended, so
+# a .env the repository already has is kept. The session login is the
+# project login (ASD_BASIC_AUTH_*): Caddy's login in front of the terminal and
+# of the published route is that one, and without it `via init` generates a
+# hub login the laptop does not know (every request answered 401).
+{
+  echo "ASD_BASIC_AUTH_USERNAME=${SESSION_USERNAME}"
+  echo "ASD_BASIC_AUTH_PASSWORD=$(envq "$SESSION_PASSWORD")"
+  echo "ASD_TTYD_USERNAME=${SESSION_USERNAME}"
+  echo "ASD_TTYD_PASSWORD=$(envq "$SESSION_PASSWORD")"
+  echo "ASD_TTYD_SHELL_CMD=$(envq "$SESSION_SHELL")"
+  if [ "$SESSION_INTERFACE" = "codeserver" ]; then
+    echo "ASD_CODESERVER_AUTH=password"
+    echo "ASD_CODESERVER_PASSWORD=$(envq "$SESSION_PASSWORD")"
   fi
-fi
-export ASD_BIN_DIR
-
-# Ensure PATH includes the bin directory
-export PATH="${ASD_BIN_DIR}:${PATH}"
-
-echo "ASD_BIN_DIR: ${ASD_BIN_DIR}"
-echo "Binaries available:"
-ls -la "$ASD_BIN_DIR" 2>/dev/null || echo "  (directory not found)"
-
-# IMPORTANT: Export credentials BEFORE via init, because via.yaml may have
-# auto_start_ttyd/auto_start_codeserver which would start services during init.
-# Without these exports, auto-started services get auto-generated credentials
-# instead of the user-provided ones.
-export ASD_TTYD_USERNAME="${SESSION_USERNAME}"
-export ASD_TTYD_PASSWORD="${SESSION_PASSWORD}"
-export ASD_TTYD_SHELL_CMD="${SESSION_SHELL}"
-if [ "${INTERFACE}" = "codeserver" ]; then
-  export ASD_CODESERVER_AUTH=password
-  export ASD_CODESERVER_PASSWORD="${SESSION_PASSWORD}"
-fi
-
-# Create workspace if via init isn't available
-WORKSPACE_DIR="${CI_WORKSPACE}/workspace"
-mkdir -p "$WORKSPACE_DIR"
-
-# Pre-seed .env with credentials so via init's merge policy preserves them
-cat > ".env" << EOF
-ASD_TTYD_USERNAME=${SESSION_USERNAME}
-ASD_TTYD_PASSWORD=${SESSION_PASSWORD}
-ASD_TTYD_SHELL_CMD=${SESSION_SHELL}
-EOF
-if [ "${INTERFACE}" = "codeserver" ]; then
-  cat >> ".env" << EOF
-ASD_CODESERVER_AUTH=password
-ASD_CODESERVER_PASSWORD=${SESSION_PASSWORD}
-EOF
-fi
+} >> .env
 chmod 600 .env
+via init --yes
 
-# Try via init first (creates workspace, tpl.env, via.yaml)
-if via init --yes 2>/dev/null; then
-  echo "Workspace initialized with via init"
+if [ "$SESSION_INTERFACE" = "codeserver" ]; then
+  via codeserver start
+  PORT_VAR=ASD_CODESERVER_PORT
 else
-  echo "Setting up workspace manually"
-  ci_set_env "ASD_WORKSPACE_DIR" "${WORKSPACE_DIR}"
-  export ASD_WORKSPACE_DIR="${WORKSPACE_DIR}"
+  via ttyd start
+  PORT_VAR=ASD_TTYD_PORT
 fi
 
-# Ensure workspace dir is set after init
-export ASD_WORKSPACE_DIR="${ASD_WORKSPACE_DIR:-${WORKSPACE_DIR}}"
-
-# Sync tpl.env → .env (ports, paths, etc. from project template)
-if via env init 2>/dev/null; then
-  echo "Environment synced with via env init"
-fi
-
-# Preserve tunnel credentials set by provision.sh (sourcing .env may clobber them)
-_SAVE_ASD_CLIENT_ID="${ASD_CLIENT_ID:-}"
-_SAVE_ASD_CLIENT_SECRET="${ASD_CLIENT_SECRET:-}"
-_SAVE_ASD_TUNNEL_KEY="${ASD_TUNNEL_KEY:-}"
-_SAVE_ASD_TUNNEL_KEY_ID="${ASD_TUNNEL_KEY_ID:-}"
-_SAVE_ASD_TUNNEL_HOST="${ASD_TUNNEL_HOST:-}"
-_SAVE_ASD_TUNNEL_PORT="${ASD_TUNNEL_PORT:-}"
-_SAVE_ASD_EXPIRES_AT="${ASD_EXPIRES_AT:-}"
-_SAVE_APPEND_USER="${APPEND_USER_TO_SUBDOMAIN:-}"
-_SAVE_TUNNEL_OWNERSHIP="${TUNNEL_OWNERSHIP:-}"
-
-# Append credentials to .env (after via env init so they take precedence)
-cat >> ".env" << EOF
-ASD_TTYD_USERNAME=${ASD_TTYD_USERNAME}
-ASD_TTYD_PASSWORD=${ASD_TTYD_PASSWORD}
-ASD_TTYD_SHELL_CMD=${ASD_TTYD_SHELL_CMD}
-ASD_WORKSPACE_DIR=${ASD_WORKSPACE_DIR}
-EOF
-chmod 600 .env
-set -a
-# shellcheck disable=SC1091
-source .env
-set +a
-
-# Restore tunnel credentials (provision.sh values take precedence over .env)
-[ -n "$_SAVE_ASD_CLIENT_ID" ]      && export ASD_CLIENT_ID="$_SAVE_ASD_CLIENT_ID"
-[ -n "$_SAVE_ASD_CLIENT_SECRET" ]  && export ASD_CLIENT_SECRET="$_SAVE_ASD_CLIENT_SECRET"
-[ -n "$_SAVE_ASD_TUNNEL_KEY" ]     && export ASD_TUNNEL_KEY="$_SAVE_ASD_TUNNEL_KEY"
-[ -n "$_SAVE_ASD_TUNNEL_KEY_ID" ]  && export ASD_TUNNEL_KEY_ID="$_SAVE_ASD_TUNNEL_KEY_ID"
-[ -n "$_SAVE_ASD_TUNNEL_HOST" ]    && export ASD_TUNNEL_HOST="$_SAVE_ASD_TUNNEL_HOST"
-[ -n "$_SAVE_ASD_TUNNEL_PORT" ]    && export ASD_TUNNEL_PORT="$_SAVE_ASD_TUNNEL_PORT"
-[ -n "$_SAVE_ASD_EXPIRES_AT" ]     && export ASD_EXPIRES_AT="$_SAVE_ASD_EXPIRES_AT"
-[ -n "$_SAVE_APPEND_USER" ]        && export APPEND_USER_TO_SUBDOMAIN="$_SAVE_APPEND_USER"
-[ -n "$_SAVE_TUNNEL_OWNERSHIP" ]   && export TUNNEL_OWNERSHIP="$_SAVE_TUNNEL_OWNERSHIP"
-
-if [ "${INTERFACE}" = "codeserver" ]; then
-  # Start code-server
-  echo "Starting code-server (VS Code in browser)..."
-
-  ci_set_env "ASD_CODESERVER_AUTH" "password"
-  ci_set_env "ASD_CODESERVER_PASSWORD" "${SESSION_PASSWORD}"
-
-  START_OUTPUT=$(via codeserver start 2>&1) || {
-    ci_error "Failed to start code-server"
-    echo "$START_OUTPUT"
-    exit 1
-  }
-  echo "$START_OUTPUT"
+# What via expose publishes: on Linux/macOS the web terminal listens on its
+# socket, not a port, so the service itself (via expose ttyd <name>);
+# elsewhere the interface's port.
+PORT=""
+if [ "$SESSION_INTERFACE" != "codeserver" ] && [ "$CI_RUNNER_OS" != "Windows" ]; then
+  TARGET=ttyd
 else
-  # Start ttyd (default)
-  echo "Starting ttyd (web terminal)..."
-
-  START_OUTPUT=$(via ttyd start 2>&1) || {
-    ci_error "Failed to start ttyd"
-    echo "$START_OUTPUT"
-    exit 1
-  }
-  echo "$START_OUTPUT"
-fi
-
-# Discover port: source .env and tpl.env, then parse start output as fallback.
-# The CLI reads the port from tpl.env/via.yaml but may not write it back to .env.
-for envfile in .env tpl.env; do
-  if [ -f "$envfile" ]; then
-    set -a
-    # shellcheck disable=SC1090,SC1091
-    source "$envfile" || true
-    set +a
-  fi
-done
-
-if [ "${INTERFACE}" = "codeserver" ]; then
-  PORT="${ASD_CODESERVER_PORT:-}"
-  # Fallback: parse port from start output (matches "ASD_CODESERVER_PORT=N" or "port N")
+  PORT=$(grep -E "^${PORT_VAR}=" .env | tail -1 | cut -d= -f2-)
   if [ -z "$PORT" ]; then
-    PORT=$(echo "$START_OUTPUT" | grep -oP '(ASD_CODESERVER_PORT=|code-server port |on http://127\.0\.0\.1:)\K\d+' | tail -1 || true)
+    ci_error "${PORT_VAR} is not in .env after the interface started."
+    exit 1
   fi
-else
-  PORT="${ASD_TTYD_PORT:-}"
-  # Fallback: parse port from start output (matches "ASD_TTYD_PORT=N" or "port N")
-  if [ -z "$PORT" ]; then
-    PORT=$(echo "$START_OUTPUT" | grep -oP '(ASD_TTYD_PORT=|ttyd port |on http://127\.0\.0\.1:)\K\d+' | tail -1 || true)
-  fi
+  TARGET="$PORT"
 fi
-
-if [ -z "${PORT}" ]; then
-  ci_error "No port found for ${INTERFACE}. Start output: ${START_OUTPUT}"
-  exit 1
-fi
-echo "${INTERFACE} running on port ${PORT}"
-
-# Export port to environment
+ci_set_env "SESSION_TARGET" "${TARGET}"
 ci_set_env "SESSION_PORT" "${PORT}"
-ci_set_env "ASD_TTYD_PORT" "${PORT}"
-
-# Set output
 ci_set_output "port" "${PORT}"
 
-# Verify the interface is accessible
-echo "Verifying interface is accessible..."
-for i in {1..10}; do
-  HTTP_CODE=$(curl -so /dev/null -w '%{http_code}' "http://localhost:${PORT}/" 2>/dev/null || echo "000")
-  if [ "$HTTP_CODE" -gt 0 ] 2>/dev/null && [ "$HTTP_CODE" -lt 500 ] 2>/dev/null; then
-    echo "Interface accessible on port ${PORT}"
-    break
-  fi
-  if [ "$i" -eq 10 ]; then
-    ci_warning "Interface may not be fully ready yet"
-  fi
-  sleep 1
-done
-
-echo ""
-echo "Session interface ready:"
-echo "  Interface: ${INTERFACE}"
-echo "  Port: ${PORT}"
-echo "  Username: ${SESSION_USERNAME}"
-echo ""
-
+echo "Interface: ${SESSION_INTERFACE}, published as: ${TARGET}"
 ci_group_end
