@@ -12,7 +12,7 @@ if ($env:VERSION -cmatch '^v?[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}T[0-9]{4}\z
   if (-not $env:VERSION.StartsWith("v")) { $env:VERSION = "v$env:VERSION" }
   $env:VIA_INSTALL_BASE_URL = "https://github.com/viaalink/cli-nightly/releases/download/$env:VERSION"
 } elseif ($env:VERSION -like "*-nightly.*") {
-  Write-Output "::error::not a valid nightly tag: $env:VERSION, expected vX.Y.Z-nightly.YYYYMMDDTHHMM"
+  Write-Output "::error::cli-version is not a valid nightly tag; expected vX.Y.Z-nightly.YYYYMMDDTHHMM"
   exit 1
 }
 Invoke-RestMethod https://raw.githubusercontent.com/viaalink/cli/main/install.ps1 | Invoke-Expression

@@ -232,7 +232,7 @@ ci_set_summary() {
 # ---------------------------------------------------------------------------
 
 # Creates a GitHub deployment; no-op on GitLab (uses environment: keyword in YAML).
-# Sets DEPLOY_ID variable on success.
+# Sets the DEPLOY_ID shell variable on success (the caller passes it on).
 ci_create_deployment() {
   local environment="$1"
   local description="$2"
@@ -267,7 +267,6 @@ ci_create_deployment() {
             \"environment_url\": \"${url}\",
             \"description\": \"Viaalink CI Terminal session ready\"
           }" > /dev/null 2>&1 || true
-        ci_set_env "DEPLOY_ID" "$DEPLOY_ID"
         echo "Deployment created: View deployment button now visible"
       else
         ci_warning "Could not create deployment (check permissions)"

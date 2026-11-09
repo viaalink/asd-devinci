@@ -18,7 +18,7 @@ if [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}T[0-9]{4}$ ]]; th
   [[ "$VERSION" == v* ]] || VERSION="v$VERSION"
   VIA_INSTALL_BASE_URL="https://github.com/viaalink/cli-nightly/releases/download/${VERSION}"
 elif [[ "$VERSION" == *-nightly.* ]]; then
-  echo "::error::not a valid nightly tag: ${VERSION}, expected vX.Y.Z-nightly.YYYYMMDDTHHMM"
+  echo "::error::cli-version is not a valid nightly tag; expected vX.Y.Z-nightly.YYYYMMDDTHHMM"
   exit 1
 fi
 

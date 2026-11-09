@@ -71,7 +71,7 @@ outputs:
 
   session-name:
     description: 'Name the session was published under'
-    value: ${{ steps.connect.outputs.session_name }}
+    value: ${{ steps.credentials.outputs.session_name }}
 
   local-port:
     description: "Port of the interface on the runner (empty when the terminal listens on a socket: Linux and macOS)"
@@ -93,8 +93,10 @@ runs:
         INPUT_HOST_KEY_FINGERPRINTS: ${{ inputs.tunnel-host-key-fingerprints }}
         INPUT_PASSWORD: ${{ inputs.password }}
         INPUT_USERNAME: ${{ inputs.username }}
+        INPUT_SHELL: ${{ inputs.shell }}
         INPUT_INTERFACE: ${{ inputs.interface }}
         INPUT_TUNNEL_NAME: ${{ inputs.tunnel-name }}
+        INPUT_CLI_VERSION: ${{ inputs.cli-version }}
         INPUT_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
         GITHUB_SHA: ${{ github.sha }}
 
@@ -124,6 +126,9 @@ runs:
       run: bash "${SCRIPTS_DIR}/start-interface.sh"
       env:
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
+        STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
+        SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
+        SESSION_INTERFACE: ${{ steps.credentials.outputs.interface }}
         SESSION_USERNAME: ${{ inputs.username }}
         SESSION_PASSWORD: ${{ inputs.password }}
         SESSION_SHELL: ${{ inputs.shell }}
@@ -147,6 +152,11 @@ runs:
       run: bash "${SCRIPTS_DIR}/connect.sh"
       env:
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
+        STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
+        SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
+        SESSION_INTERFACE: ${{ steps.credentials.outputs.interface }}
+        SESSION_TIMEOUT_MINUTES: ${{ steps.credentials.outputs.timeout_minutes }}
+        SESSION_TARGET: ${{ steps.interface.outputs.target }}
         # Runner env under the names every CLI release reads; the secrets
         # are VIA_* (the CLI copies VIA_X onto ASD_X from 3.2 on).
         ASD_TUNNEL_KEY: ${{ inputs.tunnel-key }}
@@ -162,20 +172,42 @@ runs:
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_SHA: ${{ github.sha }}
 
-    # `via gh terminal` waits for this artifact to show the URL.
+    # `via gh terminal` reads tunnel-url.txt from this artifact. The name
+    # carries the session name, so two sessions in one run do not collide.
     - name: Upload tunnel URL
       uses: actions/upload-artifact@v4
       with:
-        name: tunnel-url
-        path: workspace/tunnel-url.txt
+        name: tunnel-url-${{ steps.credentials.outputs.session_name }}
+        path: ${{ steps.credentials.outputs.state_dir }}/tunnel-url.txt
         if-no-files-found: error
         retention-days: 1
 
     - name: Keep session alive
       shell: bash
-      run: bash "${SCRIPTS_DIR}/keepalive.sh"
+      run: exec bash "${SCRIPTS_DIR}/keepalive.sh"
       env:
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
+        STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
+        SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
+        SESSION_TIMEOUT_MINUTES: ${{ steps.credentials.outputs.timeout_minutes }}
+        DEPLOY_ID: ${{ steps.connect.outputs.deploy_id }}
+        ASD_NON_INTERACTIVE: '1'
+        ASD_WORKSPACE_DIR: ${{ github.workspace }}/workspace
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    # Runs whatever the steps above could not: stop the tunnel and the
+    # interface, restore (or remove) .env, mark the deployment inactive.
+    # A no-op when the session already ended cleanly.
+    - name: End the session
+      if: always()
+      shell: bash
+      run: bash "${SCRIPTS_DIR}/cleanup.sh"
+      env:
+        SCRIPTS_DIR: ${{ github.action_path }}/scripts
+        STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
+        SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
+        DEPLOY_ID: ${{ steps.connect.outputs.deploy_id }}
         ASD_NON_INTERACTIVE: '1'
         ASD_WORKSPACE_DIR: ${{ github.workspace }}/workspace
         GITHUB_TOKEN: ${{ github.token }}

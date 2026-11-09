@@ -4,10 +4,23 @@ set -euo pipefail
 SCRIPTS_DIR="${SCRIPTS_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 # shellcheck source=lib/ci.sh
 source "${SCRIPTS_DIR}/lib/ci.sh"
+# shellcheck source=cleanup.sh
+source "${SCRIPTS_DIR}/cleanup.sh"
 
-# Port of the CLI terminal workflow's "Start the interface" step. The username
-# and password were checked by credentials.sh. The login also reaches this
-# step as step env (ASD_BASIC_AUTH_*, ASD_TTYD_*, ASD_CODESERVER_*), so the
+# On failure, stop what started and give the checkout its .env back now;
+# the action's final always() step would too, but a direct call should not
+# depend on it.
+on_exit() {
+  local rc=$?
+  if [ "$rc" -ne 0 ]; then
+    cleanup_session
+  fi
+}
+trap on_exit EXIT
+
+# Port of the CLI terminal workflow's "Start the interface" step. Username,
+# password and shell were checked by credentials.sh (no line breaks). The
+# login also reaches this step as step env (ASD_BASIC_AUTH_*, ASD_TTYD_*, ASD_CODESERVER_*), so the
 # CLI does not depend on reading it back from .env.
 
 ci_group_start "Starting the session interface (${SESSION_INTERFACE})"
@@ -28,6 +41,11 @@ envq() {
 # project login (ASD_BASIC_AUTH_*): Caddy's login in front of the terminal and
 # of the published route is that one, and without it `via init` generates a
 # hub login the laptop does not know (every request answered 401).
+# Keep the repository's own .env to restore at the end (cleanup.sh).
+if [ -f .env ]; then
+  cp -p .env "${STATE_DIR}/env.backup"
+fi
+touch "${STATE_DIR}/env-seeded"
 {
   echo "ASD_BASIC_AUTH_USERNAME=${SESSION_USERNAME}"
   echo "ASD_BASIC_AUTH_PASSWORD=$(envq "$SESSION_PASSWORD")"
@@ -41,6 +59,8 @@ envq() {
 } >> .env
 chmod 600 .env
 via init --yes
+
+echo "${SESSION_INTERFACE}" > "${STATE_DIR}/interface"
 
 if [ "$SESSION_INTERFACE" = "codeserver" ]; then
   via codeserver start
@@ -64,8 +84,7 @@ else
   fi
   TARGET="$PORT"
 fi
-ci_set_env "SESSION_TARGET" "${TARGET}"
-ci_set_env "SESSION_PORT" "${PORT}"
+ci_set_output "target" "${TARGET}"
 ci_set_output "port" "${PORT}"
 
 echo "Interface: ${SESSION_INTERFACE}, published as: ${TARGET}"
