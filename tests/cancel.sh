@@ -71,8 +71,14 @@ start_session() {
 
 run_keepalive_bg() {
   local t="$1"
+  # Job control on: without it a non-interactive shell starts background
+  # jobs with SIGINT ignored, and an ignored signal cannot be trapped. The
+  # runner's step process does not have that problem; the test must not
+  # either.
+  set -m
   (cd "$t/repo" && KEEPALIVE_INTERVAL="$INTERVAL" exec bash "$SCRIPTS/keepalive.sh" >"$t/keepalive.log" 2>&1) &
   KA_PID=$!
+  set +m
   for _ in $(seq 50); do
     grep -q "Session is up" "$t/keepalive.log" 2>/dev/null && break
     sleep 0.1
@@ -81,6 +87,17 @@ run_keepalive_bg() {
 }
 
 # ps, not pgrep: the test puts a pgrep stub on PATH.
+# Waits up to 15 s for a process to end; never hangs the test.
+wait_gone() {
+  local pid="$1"
+  for _ in $(seq 150); do
+    kill -0 "$pid" 2>/dev/null || { wait "$pid" 2>/dev/null || true; return 0; }
+    sleep 0.1
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+  return 1
+}
+
 no_sleep_left() { ! ps -eo args= | grep -qx "sleep ${INTERVAL}"; }
 
 echo "# 1. Cancel: SIGINT to the keep-alive step, then the final step"
@@ -91,7 +108,7 @@ check "session published (exposed + interface + caddy markers)" \
   test -f "$T1/state/exposed" -a -f "$T1/state/interface" -a -f "$T1/state/caddy-started"
 run_keepalive_bg "$T1"
 kill -INT "$KA_PID"
-wait "$KA_PID" || true
+check "keep-alive exits on SIGINT" wait_gone "$KA_PID"
 FINAL1="$(cd "$T1/repo" && PATH="$T1/bin:$PATH" bash "$SCRIPTS/cleanup.sh" 2>&1)"
 check "keep-alive logs that it ends the session" grep -q "Ending the session (cancelled)" "$T1/keepalive.log"
 check "via expose stop ran" grep -qx "via expose stop demo" "$T1/fake/calls"
@@ -105,13 +122,24 @@ check "no keep-alive sleep left" no_sleep_left
 check "final step says why there is nothing left" \
   grep -q "Nothing left to do: the session was already ended by the keep-alive step (cancelled)" <<<"$FINAL1"
 
+echo "# 1b. Cancel arriving as SIGTERM (the runner's second signal)"
+T1B="$(mktemp -d)"
+make_stubs "$T1B"
+start_session "$T1B"
+run_keepalive_bg "$T1B"
+kill -TERM "$KA_PID"
+check "keep-alive exits on SIGTERM" wait_gone "$KA_PID"
+check "exposure stopped on SIGTERM" grep -q "Stopped the exposure 'demo'" "$T1B/keepalive.log"
+check ".env restored on SIGTERM" test "$(cat "$T1B/repo/.env")" = "MINE=1"
+check "no keep-alive sleep left after SIGTERM" no_sleep_left
+
 echo "# 2. Keep-alive killed outright (SIGKILL): the final step does it all"
 T2="$(mktemp -d)"
 make_stubs "$T2"
 start_session "$T2"
 run_keepalive_bg "$T2"
 kill -KILL "$KA_PID"
-wait "$KA_PID" 2>/dev/null || true
+wait_gone "$KA_PID" || true
 pkill -f "^sleep ${INTERVAL}\$" 2>/dev/null || true  # the runner's orphan cleanup
 FINAL2="$(cd "$T2/repo" && PATH="$T2/bin:$PATH" bash "$SCRIPTS/cleanup.sh" 2>&1)"
 check "final step stops the exposure" grep -q "Stopped the exposure 'demo'" <<<"$FINAL2"
@@ -142,7 +170,7 @@ echo "# 5. Nothing started: the final step says so"
 FINAL5="$(STATE_DIR="" bash "$SCRIPTS/cleanup.sh" 2>&1)"
 check "explains why there is nothing to do" grep -q "Nothing to do: no session state" <<<"$FINAL5"
 
-rm -rf "$T1" "$T2" "$T3" "$T4"
+rm -rf "$T1" "$T1B" "$T2" "$T3" "$T4"
 if [ "$FAILS" -gt 0 ]; then
   echo "$FAILS check(s) failed"
   exit 1
