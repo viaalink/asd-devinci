@@ -48,7 +48,8 @@ SPEC → EXECUTE → EVAL → TRACE → GATE → COMMIT → LEARN
 │   ├── install-cli.ps1                # Official install.ps1 on Windows
 │   ├── start-interface.sh             # Seed the login, via init, start ttyd or code-server
 │   ├── connect.sh                     # via expose, read the URL back, outputs + summary
-│   └── keepalive.sh                   # Hold the session; stop tunnel/deployment/.env at the end
+│   ├── keepalive.sh                   # Hold the session until cancel / timeout
+│   └── cleanup.sh                     # End the session: stop, restore .env, deployment (idempotent)
 ├── .github/workflows/
 │   ├── ci.yml                         # CI pipeline (shellcheck, action.yml parses)
 │   ├── self-test.yml                  # Self-test workflow (VIA_* secrets)
@@ -77,8 +78,14 @@ started, published or stopped goes here first, then the CLI wrapper follows.
    `via ttyd start` or `via codeserver start`. The login is also step env.
 4. `via expose ttyd <name>` (socket, Linux/macOS) or `via expose <port> <name>`
    (Windows, code-server); the URL is read back from `via expose list --json`.
-5. Uploads the `tunnel-url` artifact (`via gh terminal` reads it), then keeps
-   the job alive until cancel, job timeout or the `timeout-minutes` input.
+5. Uploads the `tunnel-url-<session>` artifact (`via gh terminal` reads
+   `tunnel-url.txt` from it), then keeps the job alive until cancel, job timeout
+   or the `timeout-minutes` input.
+6. `cleanup.sh` (from the failing step's trap, keepalive's trap and a final
+   `if: always()` step): stop tunnel and interface, restore the repository's
+   `.env` from the backup (or remove it), deployment inactive.
+   Session state (backup, markers, URL file) lives in `$RUNNER_TEMP/ci-terminal-<session>`;
+   steps pass values as step outputs, never `$GITHUB_ENV`.
 
 ## Key Design Decisions
 
@@ -86,6 +93,7 @@ started, published or stopped goes here first, then the CLI wrapper follows.
 - **Secrets are `VIA_*`**; the runner env uses the `ASD_*` names every CLI release reads (the CLI copies VIA_X onto ASD_X from 3.2 on). Do not add other aliases.
 - **URL never assembled**: shared and dedicated relays shape hostnames differently
 - **Host key pinning is never skipped** (`tunnel-host-key-fingerprints` is required)
+- **Logs**: never echo an input value in an error; mask the password (raw and URL-encoded) before any CLI step; do not print the relay host or key id
 
 ## Consumer Usage
 
@@ -100,7 +108,7 @@ started, published or stopped goes here first, then the CLI wrapper follows.
     password: ${{ secrets.VIA_TERMINAL_PASSWORD }}
 ```
 
-`viaalink/ci-terminal@v2` resolves only after the repo rename and a v2 tag.
+`viaalink/ci-terminal@v2` and `via ci install` are the target and become available with the v2 release (repo rename + v2 tag + CLI release). Until then the CLI command is `via devinci install`, which installs the self-contained workflow.
 
 ## Related
 

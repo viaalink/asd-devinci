@@ -2,6 +2,8 @@
 
 A browser terminal (ttyd) or VS Code (code-server) on your CI runner, published through your own Viaalink Relay, behind a login. Start it from your laptop, open the link, and you are working inside the runner: the checked-out repository, the toolchain and the environment your pipeline sees. Useful to debug a job that only fails in CI, or to work on a machine you do not have locally. Nothing is opened on the runner itself: it connects out to your relay over SSH, and the relay serves the session under its own domain.
 
+> **Coming with the v2 release.** `via ci install` and `uses: viaalink/ci-terminal@v2` below become available with v2 of this action and the matching Viaalink CLI release. Until then the command is `via devinci install`, which installs a self-contained workflow (it does not use this action) that `via gh terminal` starts the same way.
+
 ## Quick start
 
 You need the [Viaalink CLI](https://github.com/viaalink/cli) (`via`; `asd` still works as an alias) and a relay you are enrolled on.
@@ -54,7 +56,7 @@ There is no default relay: the session is always published through the relay who
 via gh terminal
 ```
 
-Pick the options, wait for the URL, open it and sign in with the username you chose and the `VIA_TERMINAL_PASSWORD` password. The same URL is in the run's summary and in its `tunnel-url` artifact.
+Pick the options, wait for the URL, open it and sign in with the username you chose and the `VIA_TERMINAL_PASSWORD` password. The same URL is in the run's summary and in its `tunnel-url-<session name>` artifact.
 
 ### In your own workflow
 
@@ -117,7 +119,15 @@ For VS Code in the browser, add `interface: codeserver`.
 | List the workflows you can start | `via gh list` |
 | Sign the GitHub CLI in | `via gh login` |
 
-A session also ends when you cancel the run on GitHub, when the action's `timeout-minutes` input is reached, or when the job reaches its own `timeout-minutes` (6 hours in the installed workflow, the GitHub maximum for hosted runners). On the way out the action stops the tunnel, removes the `.env` that held the login and marks the deployment inactive.
+A session also ends when you cancel the run on GitHub, when the action's `timeout-minutes` input is reached, or when the job reaches its own `timeout-minutes` (6 hours in the installed workflow, the GitHub maximum for hosted runners).
+
+On the way out, and also when a step of the action fails, the action:
+
+- stops the tunnel and the terminal or VS Code server;
+- puts back the repository's own `.env` exactly as it was before the session (the login lines and whatever `via init` added are gone), or removes `.env` if the repository had none;
+- marks the deployment inactive.
+
+A final `if: always()` step repeats this for anything a cancelled step could not finish. Other files the session created (`via init` output, the `workspace/` directory, anything you made in the terminal) stay.
 
 ## Your own runners
 
@@ -125,13 +135,13 @@ The session works the same on self-hosted runners: choose `self-hosted` as the o
 
 - The runner needs outbound SSH to the relay port (2222 unless `VIA_TUNNEL_PORT` says otherwise), HTTPS to GitHub (the CLI installer), and `bash`, `curl` and `jq`; on Windows also PowerShell and Git Bash.
 - Linux, macOS and Windows runners are supported (x64; arm64 on Linux and macOS).
-- A self-hosted runner keeps its disk between jobs. The action removes the `.env` it wrote, but anything you create in the session stays. Prefer ephemeral runners, or a runner dedicated to these sessions.
+- A self-hosted runner keeps its disk between jobs. The action restores `.env` (see above), but anything else the session created stays. Prefer ephemeral runners, or a runner dedicated to these sessions.
 
 ## Security notes
 
 - **Whoever can open the terminal can read the relay key on the runner.** The tunnel runs on the runner with that key. That is why the key belongs to a device enrolled for CI alone: if it leaks, remove that device from the relay.
 - Anyone who can start the workflow can open a session with the repository's secrets in reach. Keep `workflow_dispatch` workflows that use this action to people you would give that access.
-- The session is behind a login (basic auth) and served over HTTPS by your relay. The output `url` embeds the login, for one-click access: treat it like a password. Secrets are masked in the logs.
+- The session is behind a login (basic auth) and served over HTTPS by your relay. The output `url` embeds the login, for one-click access: treat it like a password. The password, its URL-encoded forms and the `url` output are masked in the logs, and the relay host and key id are not printed.
 - The relay's host key is pinned (`VIA_TUNNEL_HOST_KEY_FINGERPRINTS`): the runner refuses a relay that does not present it.
 
 ## Inputs
