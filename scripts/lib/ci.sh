@@ -265,7 +265,7 @@ ci_create_deployment() {
           -d "{
             \"state\": \"success\",
             \"environment_url\": \"${url}\",
-            \"description\": \"ASD DevInCi session ready\"
+            \"description\": \"Viaalink CI Terminal session ready\"
           }" > /dev/null 2>&1 || true
         ci_set_env "DEPLOY_ID" "$DEPLOY_ID"
         echo "Deployment created: View deployment button now visible"

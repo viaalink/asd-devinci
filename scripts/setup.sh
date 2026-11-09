@@ -5,7 +5,7 @@ SCRIPTS_DIR="${SCRIPTS_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 # shellcheck source=lib/ci.sh
 source "${SCRIPTS_DIR}/lib/ci.sh"
 
-ci_group_start "Installing ASD CLI ${ASD_VERSION:-latest}"
+ci_group_start "Installing the Viaalink CLI ${ASD_VERSION:-latest}"
 
 # Determine asset name based on OS/arch
 case "${CI_RUNNER_OS}-${CI_RUNNER_ARCH}" in
@@ -17,18 +17,17 @@ case "${CI_RUNNER_OS}-${CI_RUNNER_ARCH}" in
   *) ci_error "Unsupported platform: ${CI_RUNNER_OS}-${CI_RUNNER_ARCH}"; exit 1 ;;
 esac
 
-# Download from GitHub releases
-# NOTE: CLI releases are published to asd-cli (public repo)
+# Download from the public release repo (asset names still start with asd-)
 VERSION="${ASD_VERSION:-latest}"
 if [ "$VERSION" = "latest" ]; then
-  DOWNLOAD_URL="https://github.com/asd-engineering/asd-cli/releases/latest/download/${ASSET}"
+  DOWNLOAD_URL="https://github.com/viaalink/cli/releases/latest/download/${ASSET}"
 else
   # Ensure version has 'v' prefix to match GitHub release tags
   case "$VERSION" in
     v*) TAG="$VERSION" ;;
     *)  TAG="v${VERSION}" ;;
   esac
-  DOWNLOAD_URL="https://github.com/asd-engineering/asd-cli/releases/download/${TAG}/${ASSET}"
+  DOWNLOAD_URL="https://github.com/viaalink/cli/releases/download/${TAG}/${ASSET}"
 fi
 
 echo "Downloading: ${DOWNLOAD_URL}"
@@ -38,14 +37,14 @@ TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 if [ "$CI_RUNNER_OS" = "Windows" ]; then
-  # Windows: binaries go to %LOCALAPPDATA%/asd/bin
-  curl -fsSL "${DOWNLOAD_URL}" -o "$TMPDIR/asd-cli.zip"
+  # Windows: binaries go to %LOCALAPPDATA%/via/bin (the 3.2 data directory)
+  curl -fsSL "${DOWNLOAD_URL}" -o "$TMPDIR/cli.zip"
 
-  ASD_BIN_DIR="${LOCALAPPDATA}/asd/bin"
+  ASD_BIN_DIR="${LOCALAPPDATA}/via/bin"
   mkdir -p "$ASD_BIN_DIR"
 
   # Extract (zip may have top-level dir like asd-windows-x64/)
-  unzip -q "$TMPDIR/asd-cli.zip" -d "$TMPDIR/extract"
+  unzip -q "$TMPDIR/cli.zip" -d "$TMPDIR/extract"
   # Handle both flat (bin/*) and nested (asd-windows-x64/bin/*) archive layouts
   if [ -d "$TMPDIR/extract/bin" ]; then
     cp "$TMPDIR/extract/bin/"* "$ASD_BIN_DIR/"
@@ -53,32 +52,39 @@ if [ "$CI_RUNNER_OS" = "Windows" ]; then
     cp "$TMPDIR/extract/"*/bin/* "$ASD_BIN_DIR/"
   fi
 
+  # The Windows archive ships asd.exe only; install.ps1 installs it under
+  # both names, and so do we.
+  if [ ! -f "$ASD_BIN_DIR/via.exe" ] && [ -f "$ASD_BIN_DIR/asd.exe" ]; then
+    cp "$ASD_BIN_DIR/asd.exe" "$ASD_BIN_DIR/via.exe"
+  fi
+
   ci_add_path "${ASD_BIN_DIR}"
   ci_set_env "ASD_BIN_DIR" "${ASD_BIN_DIR}"
   echo "Installed to ${ASD_BIN_DIR}"
 else
-  # Linux/macOS: binaries go to ~/.local/share/asd/bin (where ASD CLI expects them)
-  curl -fsSL "${DOWNLOAD_URL}" -o "$TMPDIR/asd-cli.tar.gz"
+  # Linux/macOS: binaries go to ~/.local/share/via/bin (the 3.2 data directory)
+  curl -fsSL "${DOWNLOAD_URL}" -o "$TMPDIR/cli.tar.gz"
 
-  # Determine ASD bin directory based on OS
+  # Determine the CLI's bin directory based on OS
   if [ "$CI_RUNNER_OS" = "macOS" ]; then
-    ASD_BIN_DIR="${HOME}/Library/Application Support/asd/bin"
+    ASD_BIN_DIR="${HOME}/Library/Application Support/via/bin"
   else
-    ASD_BIN_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/asd/bin"
+    ASD_BIN_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/via/bin"
   fi
   mkdir -p "$ASD_BIN_DIR"
 
   # Extract (--strip-components=1 removes top-level dir like asd-linux-x64/)
   mkdir -p "$TMPDIR/extract"
-  tar -xzf "$TMPDIR/asd-cli.tar.gz" -C "$TMPDIR/extract" --strip-components=1
+  tar -xzf "$TMPDIR/cli.tar.gz" -C "$TMPDIR/extract" --strip-components=1
 
-  # Install to ASD bin directory (where ASD CLI looks for helper binaries)
-  cp "$TMPDIR/extract/bin/"* "$ASD_BIN_DIR/"
+  # Install to the CLI's bin directory (where it looks for helper binaries)
+  # -P keeps `via` a symlink to `asd` instead of a second copy
+  cp -P "$TMPDIR/extract/bin/"* "$ASD_BIN_DIR/"
   chmod +x "$ASD_BIN_DIR"/*
 
   # Add to PATH for direct execution
   ci_add_path "${ASD_BIN_DIR}"
-  # Export for subsequent steps so ASD CLI knows where binaries are
+  # Export for subsequent steps so the CLI knows where binaries are
   ci_set_env "ASD_BIN_DIR" "${ASD_BIN_DIR}"
 
   echo "Installed to ${ASD_BIN_DIR}"
@@ -97,12 +103,16 @@ echo ""
 echo "Verifying installation..."
 echo "ASD_BIN_DIR: ${ASD_BIN_DIR}"
 ls -la "$ASD_BIN_DIR"
-"${ASD_BIN_DIR}/asd" --version 2>/dev/null || echo "asd: installed (no --version flag)"
-"${ASD_BIN_DIR}/asd-tunnel" --version 2>/dev/null || echo "asd-tunnel: installed"
+# The scripts call `via`, which ships from Viaalink CLI 3.2 on.
+if ! ls "${ASD_BIN_DIR}"/via* >/dev/null 2>&1; then
+  ci_error "No 'via' binary in ${VERSION}. This action needs Viaalink CLI 3.2 or newer (asd-version: latest)."
+  exit 1
+fi
+"${ASD_BIN_DIR}/via" --version 2>/dev/null || echo "via: installed"
 "${ASD_BIN_DIR}/ttyd" --version 2>/dev/null || echo "ttyd: installed"
 "${ASD_BIN_DIR}/caddy" version 2>/dev/null || echo "caddy: installed"
 
 echo ""
-echo "ASD CLI installed successfully to ${ASD_BIN_DIR}"
+echo "Viaalink CLI installed to ${ASD_BIN_DIR}"
 
 ci_group_end

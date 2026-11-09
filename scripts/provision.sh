@@ -5,9 +5,14 @@ SCRIPTS_DIR="${SCRIPTS_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 # shellcheck source=lib/ci.sh
 source "${SCRIPTS_DIR}/lib/ci.sh"
 
-ASD_ENDPOINT="${ASD_ENDPOINT:-https://api.asd.host}"
+# No default: there is no hosted provisioning service. Relay credentials come
+# from `via auth export` (tunnel-key mode) or from client-id/client-secret.
+ASD_ENDPOINT="${ASD_ENDPOINT:-}"
 
-# Mask API key early to prevent leaking in logs
+# Mask secrets early to prevent leaking in logs
+if [ -n "${INPUT_TUNNEL_KEY:-}" ]; then
+  ci_mask "${INPUT_TUNNEL_KEY}"
+fi
 if [ -n "${ASD_API_KEY:-}" ]; then
   ci_mask "${ASD_API_KEY}"
 fi
@@ -26,11 +31,34 @@ if [ -n "${REGION:-}" ] && [[ ! "$REGION" =~ ^[a-z0-9-]*$ ]]; then
   exit 1
 fi
 
-ci_group_start "Provisioning tunnel credentials"
+ci_group_start "Checking relay credentials"
 
-if [ -n "${INPUT_CLIENT_ID:-}" ] && [ -n "${INPUT_CLIENT_SECRET:-}" ]; then
-  # === PRE-EXISTING CREDENTIALS MODE ===
-  # Used when CLI passes credentials from local registry (e.g. asd gh terminal)
+RELAY_AUTH=""
+ASD_CLIENT_ID=""
+ASD_CLIENT_SECRET=""
+EXPIRES_AT=""
+OWNERSHIP_TYPE=""
+APPEND_USER=""
+
+if [ -n "${INPUT_TUNNEL_KEY:-}" ] || [ -n "${INPUT_TUNNEL_KEY_ID:-}" ]; then
+  # === RELAY KEY MODE (recommended) ===
+  # The values `via auth export` prints on a device enrolled on the relay.
+  RELAY_AUTH="key"
+  if [ -z "${INPUT_TUNNEL_KEY:-}" ] || [ -z "${INPUT_TUNNEL_KEY_ID:-}" ]; then
+    ci_error "tunnel-key and tunnel-key-id go together. Run 'via auth export' on a device enrolled on your relay and pass both values from secrets."
+    exit 1
+  fi
+  if [ -z "${ASD_TUNNEL_HOST:-}" ]; then
+    ci_error "tunnel-host is required with tunnel-key: pass the ASD_TUNNEL_HOST value from 'via auth export'."
+    exit 1
+  fi
+  EXPIRES_AT="N/A (relay key)"
+  echo "Using relay key ${INPUT_TUNNEL_KEY_ID} on ${ASD_TUNNEL_HOST}"
+
+elif [ -n "${INPUT_CLIENT_ID:-}" ] && [ -n "${INPUT_CLIENT_SECRET:-}" ]; then
+  # === CLIENT ID / SECRET MODE ===
+  # A relay client that logs in with a password instead of a key.
+  RELAY_AUTH="password"
   echo "Using provided client credentials (skipping provisioning)"
   ASD_CLIENT_ID="$INPUT_CLIENT_ID"
   ASD_CLIENT_SECRET="$INPUT_CLIENT_SECRET"
@@ -50,8 +78,13 @@ if [ -n "${INPUT_CLIENT_ID:-}" ] && [ -n "${INPUT_CLIENT_SECRET:-}" ]; then
 
   echo "Using pre-existing credentials: client_id=${ASD_CLIENT_ID}"
 
+elif [ -z "${ASD_ENDPOINT}" ]; then
+  ci_error "No relay credentials. On a device enrolled on your relay (via relay add '<invite link>'), run 'via auth export' and pass ASD_TUNNEL_KEY, ASD_TUNNEL_KEY_ID and ASD_TUNNEL_HOST (optionally ASD_TUNNEL_PORT) as tunnel-key, tunnel-key-id, tunnel-host and tunnel-port."
+  exit 1
+
 elif [ -n "${ASD_API_KEY:-}" ]; then
-  # === API KEY MODE ===
+  # === LEGACY API KEY MODE (only with an explicit api-endpoint) ===
+  RELAY_AUTH="password"
   # Provisions credentials via credential-provision endpoint with configurable TTL
   echo "Using API key authentication (credential-provision)"
 
@@ -122,15 +155,16 @@ elif [ -n "${ASD_API_KEY:-}" ]; then
   echo "Provisioned via API key: tunnel_user=${ASD_CLIENT_ID}, expires=${EXPIRES_AT}"
 
 else
-  # === EPHEMERAL MODE ===
-  # Public endpoint, no auth needed — short-lived tokens
+  # === LEGACY EPHEMERAL MODE (only with an explicit api-endpoint) ===
+  # Unauthenticated endpoint — short-lived tokens
+  RELAY_AUTH="password"
   echo "Creating ephemeral tunnel credentials..."
-  ci_warning "Ephemeral tokens are short-lived. Use an API key for longer sessions."
+  ci_warning "Ephemeral tokens are short-lived. Use a relay key (tunnel-key) for longer sessions."
 
   HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" "${ASD_ENDPOINT}/functions/v1/create-ephemeral-token" \
     -H "Content-Type: application/json" \
     -d "{
-      \"source\": \"ci-action:devinci\",
+      \"source\": \"ci-action:ci-terminal\",
       \"repo\": \"${CI_REPO:-unknown}\"
     }" 2>&1) || true
   HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -1)
@@ -192,21 +226,31 @@ if [ -z "${ASD_TUNNEL_HOST:-}" ]; then
   ci_error "No tunnel host available. API response must include tunnel_fqdn or tunnel_host, or provide tunnel-host input."
   exit 1
 fi
-if [ -z "${ASD_TUNNEL_PORT:-}" ]; then
+# The port is optional with a relay key (the CLI uses 2222); a password
+# login needs it spelled out.
+if [ -z "${ASD_TUNNEL_PORT:-}" ] && [ "$RELAY_AUTH" != "key" ]; then
   ci_error "No tunnel port available. API response must include tunnel_port, or provide tunnel-port input."
   exit 1
 fi
 
 # Export credentials to environment for subsequent steps
-ci_set_env "ASD_CLIENT_ID" "${ASD_CLIENT_ID}"
-ci_set_env "ASD_CLIENT_SECRET" "${ASD_CLIENT_SECRET}"
+ci_set_env "RELAY_AUTH" "${RELAY_AUTH}"
+if [ "$RELAY_AUTH" = "key" ]; then
+  ci_set_env "ASD_TUNNEL_KEY" "${INPUT_TUNNEL_KEY}"
+  ci_set_env "ASD_TUNNEL_KEY_ID" "${INPUT_TUNNEL_KEY_ID}"
+else
+  ci_set_env "ASD_CLIENT_ID" "${ASD_CLIENT_ID}"
+  ci_set_env "ASD_CLIENT_SECRET" "${ASD_CLIENT_SECRET}"
+  ci_set_env "TUNNEL_OWNERSHIP" "${OWNERSHIP_TYPE}"
+  ci_set_env "APPEND_USER_TO_SUBDOMAIN" "${APPEND_USER:-true}"
+fi
 ci_set_env "ASD_TUNNEL_HOST" "${ASD_TUNNEL_HOST}"
-ci_set_env "ASD_TUNNEL_PORT" "${ASD_TUNNEL_PORT}"
-ci_set_env "TUNNEL_OWNERSHIP" "${OWNERSHIP_TYPE}"
-ci_set_env "APPEND_USER_TO_SUBDOMAIN" "${APPEND_USER:-true}"
+if [ -n "${ASD_TUNNEL_PORT:-}" ]; then
+  ci_set_env "ASD_TUNNEL_PORT" "${ASD_TUNNEL_PORT}"
+fi
 ci_set_env "ASD_EXPIRES_AT" "${EXPIRES_AT}"
 
-# Export API key for in-session ASD CLI use (e.g. asd auth, asd net apply)
+# Export API key for in-session CLI use
 if [ -n "${ASD_API_KEY:-}" ]; then
   ci_set_env "ASD_API_KEY" "${ASD_API_KEY}"
 fi
@@ -215,5 +259,5 @@ fi
 ci_set_output "client_id" "${ASD_CLIENT_ID}"
 ci_set_output "expires_at" "${EXPIRES_AT}"
 
-echo "Tunnel: ${ASD_TUNNEL_HOST}:${ASD_TUNNEL_PORT}"
+echo "Relay: ${ASD_TUNNEL_HOST}:${ASD_TUNNEL_PORT:-2222}"
 ci_group_end

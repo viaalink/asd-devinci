@@ -6,7 +6,7 @@ SCRIPTS_DIR="${SCRIPTS_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 source "${SCRIPTS_DIR}/lib/ci.sh"
 
 INTERFACE="${INTERFACE_TYPE:-ttyd}"
-ci_group_start "Starting ASD DevInCi (${INTERFACE})"
+ci_group_start "Starting the session interface (${INTERFACE})"
 
 # Generate password if not provided
 if [ -z "${SESSION_PASSWORD:-}" ]; then
@@ -15,7 +15,7 @@ if [ -z "${SESSION_PASSWORD:-}" ]; then
 fi
 
 # Set defaults
-SESSION_USERNAME="${SESSION_USERNAME:-asd}"
+SESSION_USERNAME="${SESSION_USERNAME:-via}"
 SESSION_SHELL="${SESSION_SHELL:-bash}"
 
 # Export for subsequent steps (using generic names)
@@ -23,23 +23,23 @@ ci_set_env "SESSION_PASSWORD" "${SESSION_PASSWORD}"
 ci_set_env "SESSION_USERNAME" "${SESSION_USERNAME}"
 ci_set_env "SESSION_SHELL" "${SESSION_SHELL}"
 
-# Export ASD ttyd env vars for ASD CLI
+# Export the ttyd env vars the CLI reads
 ci_set_env "ASD_TTYD_PASSWORD" "${SESSION_PASSWORD}"
 ci_set_env "ASD_TTYD_USERNAME" "${SESSION_USERNAME}"
 ci_set_env "ASD_TTYD_SHELL_CMD" "${SESSION_SHELL}"
 
-# Initialize ASD workspace (creates workspace directory, .env file)
+# Initialize the CLI workspace (creates workspace directory, .env file)
 export ASD_NON_INTERACTIVE=1
 export CI=true
 
 # Ensure ASD_BIN_DIR is set (from setup.sh step)
-# This tells ASD CLI where to find helper binaries like ttyd, caddy, etc.
+# This tells the CLI where to find helper binaries like ttyd, caddy, etc.
 if [ -z "${ASD_BIN_DIR:-}" ]; then
   # Fallback: determine based on OS
   if [ "$(uname)" = "Darwin" ]; then
-    ASD_BIN_DIR="${HOME}/Library/Application Support/asd/bin"
+    ASD_BIN_DIR="${HOME}/Library/Application Support/via/bin"
   else
-    ASD_BIN_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/asd/bin"
+    ASD_BIN_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/via/bin"
   fi
 fi
 export ASD_BIN_DIR
@@ -51,7 +51,7 @@ echo "ASD_BIN_DIR: ${ASD_BIN_DIR}"
 echo "Binaries available:"
 ls -la "$ASD_BIN_DIR" 2>/dev/null || echo "  (directory not found)"
 
-# IMPORTANT: Export credentials BEFORE asd init, because asd.yaml may have
+# IMPORTANT: Export credentials BEFORE via init, because via.yaml may have
 # auto_start_ttyd/auto_start_codeserver which would start services during init.
 # Without these exports, auto-started services get auto-generated credentials
 # instead of the user-provided ones.
@@ -63,11 +63,11 @@ if [ "${INTERFACE}" = "codeserver" ]; then
   export ASD_CODESERVER_PASSWORD="${SESSION_PASSWORD}"
 fi
 
-# Create workspace if asd init isn't available
+# Create workspace if via init isn't available
 WORKSPACE_DIR="${CI_WORKSPACE}/workspace"
 mkdir -p "$WORKSPACE_DIR"
 
-# Pre-seed .env with credentials so asd init's merge policy preserves them
+# Pre-seed .env with credentials so via init's merge policy preserves them
 cat > ".env" << EOF
 ASD_TTYD_USERNAME=${SESSION_USERNAME}
 ASD_TTYD_PASSWORD=${SESSION_PASSWORD}
@@ -81,9 +81,9 @@ EOF
 fi
 chmod 600 .env
 
-# Try asd init first (creates workspace, tpl.env, asd.yaml)
-if asd init --yes 2>/dev/null; then
-  echo "Workspace initialized via asd init"
+# Try via init first (creates workspace, tpl.env, via.yaml)
+if via init --yes 2>/dev/null; then
+  echo "Workspace initialized with via init"
 else
   echo "Setting up workspace manually"
   ci_set_env "ASD_WORKSPACE_DIR" "${WORKSPACE_DIR}"
@@ -94,20 +94,22 @@ fi
 export ASD_WORKSPACE_DIR="${ASD_WORKSPACE_DIR:-${WORKSPACE_DIR}}"
 
 # Sync tpl.env → .env (ports, paths, etc. from project template)
-if asd env init 2>/dev/null; then
-  echo "Environment synced via asd env init"
+if via env init 2>/dev/null; then
+  echo "Environment synced with via env init"
 fi
 
 # Preserve tunnel credentials set by provision.sh (sourcing .env may clobber them)
 _SAVE_ASD_CLIENT_ID="${ASD_CLIENT_ID:-}"
 _SAVE_ASD_CLIENT_SECRET="${ASD_CLIENT_SECRET:-}"
+_SAVE_ASD_TUNNEL_KEY="${ASD_TUNNEL_KEY:-}"
+_SAVE_ASD_TUNNEL_KEY_ID="${ASD_TUNNEL_KEY_ID:-}"
 _SAVE_ASD_TUNNEL_HOST="${ASD_TUNNEL_HOST:-}"
 _SAVE_ASD_TUNNEL_PORT="${ASD_TUNNEL_PORT:-}"
 _SAVE_ASD_EXPIRES_AT="${ASD_EXPIRES_AT:-}"
 _SAVE_APPEND_USER="${APPEND_USER_TO_SUBDOMAIN:-}"
 _SAVE_TUNNEL_OWNERSHIP="${TUNNEL_OWNERSHIP:-}"
 
-# Append credentials to .env (after asd env init so they take precedence)
+# Append credentials to .env (after via env init so they take precedence)
 cat >> ".env" << EOF
 ASD_TTYD_USERNAME=${ASD_TTYD_USERNAME}
 ASD_TTYD_PASSWORD=${ASD_TTYD_PASSWORD}
@@ -123,6 +125,8 @@ set +a
 # Restore tunnel credentials (provision.sh values take precedence over .env)
 [ -n "$_SAVE_ASD_CLIENT_ID" ]      && export ASD_CLIENT_ID="$_SAVE_ASD_CLIENT_ID"
 [ -n "$_SAVE_ASD_CLIENT_SECRET" ]  && export ASD_CLIENT_SECRET="$_SAVE_ASD_CLIENT_SECRET"
+[ -n "$_SAVE_ASD_TUNNEL_KEY" ]     && export ASD_TUNNEL_KEY="$_SAVE_ASD_TUNNEL_KEY"
+[ -n "$_SAVE_ASD_TUNNEL_KEY_ID" ]  && export ASD_TUNNEL_KEY_ID="$_SAVE_ASD_TUNNEL_KEY_ID"
 [ -n "$_SAVE_ASD_TUNNEL_HOST" ]    && export ASD_TUNNEL_HOST="$_SAVE_ASD_TUNNEL_HOST"
 [ -n "$_SAVE_ASD_TUNNEL_PORT" ]    && export ASD_TUNNEL_PORT="$_SAVE_ASD_TUNNEL_PORT"
 [ -n "$_SAVE_ASD_EXPIRES_AT" ]     && export ASD_EXPIRES_AT="$_SAVE_ASD_EXPIRES_AT"
@@ -136,7 +140,7 @@ if [ "${INTERFACE}" = "codeserver" ]; then
   ci_set_env "ASD_CODESERVER_AUTH" "password"
   ci_set_env "ASD_CODESERVER_PASSWORD" "${SESSION_PASSWORD}"
 
-  START_OUTPUT=$(asd code start 2>&1) || {
+  START_OUTPUT=$(via codeserver start 2>&1) || {
     ci_error "Failed to start code-server"
     echo "$START_OUTPUT"
     exit 1
@@ -146,7 +150,7 @@ else
   # Start ttyd (default)
   echo "Starting ttyd (web terminal)..."
 
-  START_OUTPUT=$(asd ttyd start 2>&1) || {
+  START_OUTPUT=$(via ttyd start 2>&1) || {
     ci_error "Failed to start ttyd"
     echo "$START_OUTPUT"
     exit 1
@@ -155,7 +159,7 @@ else
 fi
 
 # Discover port: source .env and tpl.env, then parse start output as fallback.
-# ASD CLI reads port from tpl.env/asd.yaml but may not write it back to .env.
+# The CLI reads the port from tpl.env/via.yaml but may not write it back to .env.
 for envfile in .env tpl.env; do
   if [ -f "$envfile" ]; then
     set -a
@@ -207,7 +211,7 @@ for i in {1..10}; do
 done
 
 echo ""
-echo "ASD DevInCi ready:"
+echo "Session interface ready:"
 echo "  Interface: ${INTERFACE}"
 echo "  Port: ${PORT}"
 echo "  Username: ${SESSION_USERNAME}"

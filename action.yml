@@ -1,14 +1,22 @@
-name: 'ASD DevInCi'
-description: 'Full dev environment in CI runners with web terminal, VS Code, and ASD tunnels'
-author: 'ASD Engineering (Accelerated Software Development B.V.)'
+name: 'Viaalink CI Terminal'
+description: 'A browser terminal or VS Code on your CI runner, published through your own Viaalink Relay, behind a login'
+author: 'Viaalink'
 
 branding:
   icon: 'code'
   color: 'purple'
 
 inputs:
+  tunnel-key:
+    description: 'Relay device key (base64), the ASD_TUNNEL_KEY value from `via auth export`. Pass it from a secret.'
+    required: false
+
+  tunnel-key-id:
+    description: 'Relay device key id, the ASD_TUNNEL_KEY_ID value from `via auth export`. Pass it from a secret.'
+    required: false
+
   api-key:
-    description: 'ASD API key with cicd:provision scope (provisions long-lived credentials)'
+    description: 'Legacy: provisioning API key. Only used together with api-endpoint; prefer tunnel-key.'
     required: false
 
   interface:
@@ -20,64 +28,64 @@ inputs:
     default: 'bash'
 
   username:
-    description: 'Basic auth username'
-    default: 'asd'
+    description: 'Login username'
+    default: 'via'
 
   password:
-    description: 'Basic auth password (auto-generated if empty)'
+    description: 'Login password (generated and masked if empty)'
     required: false
 
   tunnel-name:
-    description: 'Subdomain prefix (default: short SHA)'
+    description: 'Name of the session, the first label of its hostname (default: short commit SHA)'
     required: false
 
   tunnel-host:
-    description: 'Tunnel server hostname (auto-detected from API response)'
+    description: 'Relay host, the ASD_TUNNEL_HOST value from `via auth export` (required with tunnel-key)'
     default: ''
 
   tunnel-port:
-    description: 'Tunnel server SSH port (auto-detected from API response)'
+    description: 'Relay SSH port, the ASD_TUNNEL_PORT value from `via auth export` (the CLI uses 2222 when empty)'
     default: ''
 
   region:
-    description: 'Tunnel server region (synced from API via just devinci-sync-regions)'
+    description: 'Legacy: relay region for the provisioning API (api-key mode only)'
     required: false
 
   ttl-minutes:
-    description: 'Token TTL in minutes (0 = no expiry, API key mode only)'
+    description: 'Legacy: credential lifetime in minutes for the provisioning API (0 = no expiry, api-key mode only)'
     default: '0'
 
   asd-version:
-    description: 'ASD CLI release tag'
+    description: 'Viaalink CLI release tag to install (3.2 or newer), or latest'
     default: 'latest'
 
   api-endpoint:
-    description: 'ASD API endpoint'
-    default: 'https://api.asd.host'
+    description: 'Legacy: provisioning API base URL for api-key mode. There is no default service.'
+    default: ''
 
   client-id:
-    description: 'Pre-existing ASD client ID (skips provisioning if provided with client-secret)'
+    description: 'Relay client id for password login (with client-secret, tunnel-host and tunnel-port)'
     required: false
 
   client-secret:
-    description: 'Pre-existing ASD client secret (required if client-id provided)'
+    description: 'Relay client secret for password login (required with client-id)'
     required: false
 
   direct:
-    description: 'Use --direct flag for asd expose (bypass Caddy proxy)'
+    description: 'Pass --direct to via expose: connect the relay straight to the service, without the login the CLI puts in front'
     default: 'false'
 
 outputs:
   url:
-    description: 'Session URL with embedded credentials'
+    description: 'Session URL with the login embedded'
     value: ${{ steps.connect.outputs.url }}
 
   url-base:
-    description: 'Session URL without credentials'
+    description: 'Session URL without the login'
     value: ${{ steps.connect.outputs.url_base }}
 
   tunnel-user:
-    description: 'Tunnel client ID'
+    description: 'Relay client id (empty with tunnel-key)'
     value: ${{ steps.provision.outputs.client_id }}
 
   local-port:
@@ -85,13 +93,13 @@ outputs:
     value: ${{ steps.interface.outputs.port }}
 
   expires-at:
-    description: 'Token expiration (ISO 8601)'
+    description: 'Credential expiry (ISO 8601), when the credential has one'
     value: ${{ steps.provision.outputs.expires_at }}
 
 runs:
   using: 'composite'
   steps:
-    - name: Install ASD CLI
+    - name: Install the Viaalink CLI
       id: install
       shell: bash
       run: bash "${SCRIPTS_DIR}/setup.sh"
@@ -101,12 +109,14 @@ runs:
         RUNNER_OS: ${{ runner.os }}
         RUNNER_ARCH: ${{ runner.arch }}
 
-    - name: Provision credentials
+    - name: Check relay credentials
       id: provision
       shell: bash
       run: bash "${SCRIPTS_DIR}/provision.sh"
       env:
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
+        INPUT_TUNNEL_KEY: ${{ inputs.tunnel-key }}
+        INPUT_TUNNEL_KEY_ID: ${{ inputs.tunnel-key-id }}
         ASD_API_KEY: ${{ inputs.api-key }}
         ASD_ENDPOINT: ${{ inputs.api-endpoint }}
         ASD_TUNNEL_HOST: ${{ inputs.tunnel-host }}
@@ -129,33 +139,9 @@ runs:
         SESSION_PASSWORD: ${{ inputs.password }}
         SESSION_SHELL: ${{ inputs.shell }}
 
-    - name: Write tunnel URL
-      id: tunnel-url
-      shell: bash
-      run: |
-        NAME="${TUNNEL_NAME:-${GITHUB_SHA:0:7}}"
-        if [ "$APPEND_USER_TO_SUBDOMAIN" = "true" ] && [ -n "$ASD_CLIENT_ID" ]; then
-          URL_HOST="${NAME}-${ASD_CLIENT_ID}.${ASD_TUNNEL_HOST}"
-        else
-          URL_HOST="${NAME}.${ASD_TUNNEL_HOST}"
-        fi
-        TUNNEL_URL="https://${URL_HOST}/"
-        mkdir -p workspace
-        echo "${TUNNEL_URL}" > workspace/tunnel-url.txt
-        echo "tunnel_url=${TUNNEL_URL}" >> "$GITHUB_OUTPUT"
-      env:
-        TUNNEL_NAME: ${{ inputs.tunnel-name }}
-        GITHUB_SHA: ${{ github.sha }}
-
-    - name: Upload tunnel URL
-      uses: actions/upload-artifact@v4
-      with:
-        name: tunnel-url
-        path: workspace/tunnel-url.txt
-        if-no-files-found: error
-        retention-days: 1
-
-    - name: Connect tunnel
+    # Publishes the session and returns; the tunnel keeps running for the
+    # rest of the job. The URL is read back from the CLI, never assembled.
+    - name: Publish through the relay
       id: connect
       shell: bash
       run: bash "${SCRIPTS_DIR}/connect.sh"
@@ -168,3 +154,20 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_RUN_ID: ${{ github.run_id }}
+
+    # `via gh terminal` waits for this artifact to show the URL.
+    - name: Upload tunnel URL
+      uses: actions/upload-artifact@v4
+      with:
+        name: tunnel-url
+        path: workspace/tunnel-url.txt
+        if-no-files-found: error
+        retention-days: 1
+
+    - name: Keep session alive
+      shell: bash
+      run: bash "${SCRIPTS_DIR}/keepalive.sh"
+      env:
+        SCRIPTS_DIR: ${{ github.action_path }}/scripts
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
