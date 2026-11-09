@@ -159,7 +159,7 @@ The session works the same on self-hosted runners: choose `self-hosted` as the o
 | `interface` | `terminal` (ttyd) or `codeserver` (VS Code) | `terminal` |
 | `shell` | `bash`, `zsh` or `powershell` | `bash` |
 | `tunnel-name` | Name of the session, the first label of its hostname | short commit SHA |
-| `cli-version` | Viaalink CLI: `latest`, a release tag or a nightly tag. `latest` works once the next CLI release after 3.2.6 is out; until then the default is the first build this action works with | `v3.2.6-nightly.20261109T1503` |
+| `cli-version` | Viaalink CLI: `latest`, a release tag or a nightly tag. `latest` works once the next CLI release after 3.2.6 is out; until then empty (the default) installs the first build this action works with | empty |
 | `timeout-minutes` | End the session after this many minutes (0 = at cancel or job timeout) | `0` |
 
 ## Outputs

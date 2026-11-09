@@ -75,7 +75,9 @@ case "${INPUT_INTERFACE:-terminal}" in
 esac
 
 # latest, a release tag or a nightly tag (the installer is handed this value).
-if ! [[ "${INPUT_CLI_VERSION:-latest}" =~ ^(latest|v?[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?)$ ]]; then
+# Empty means the action's own default (DEFAULT_CLI_VERSION in action.yml).
+CLI_VERSION="${INPUT_CLI_VERSION:-${DEFAULT_CLI_VERSION:-latest}}"
+if ! [[ "$CLI_VERSION" =~ ^(latest|v?[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?)$ ]]; then
   ci_error "cli-version must be latest, a release tag (vX.Y.Z) or a nightly tag (vX.Y.Z-nightly.YYYYMMDDTHHMM)."
   exit 1
 fi
@@ -105,6 +107,7 @@ chmod 700 "$STATE_DIR"
 ci_set_output "session_name" "${NAME}"
 ci_set_output "interface" "${INPUT_INTERFACE:-terminal}"
 ci_set_output "timeout_minutes" "${TIMEOUT}"
+ci_set_output "cli_version" "${CLI_VERSION}"
 ci_set_output "state_dir" "${STATE_DIR}"
 
 echo "Session: ${NAME} (${INPUT_INTERFACE:-terminal})"

@@ -53,8 +53,8 @@ inputs:
     default: ''
 
   cli-version:
-    description: 'Viaalink CLI to install: latest, a release tag (vX.Y.Z) or a nightly tag (vX.Y.Z-nightly.YYYYMMDDTHHMM). The default is the first CLI build this action works with; latest works once the next Viaalink CLI release (after 3.2.6) is out.'
-    default: 'v3.2.6-nightly.20261109T1503'
+    description: 'Viaalink CLI to install: latest, a release tag (vX.Y.Z) or a nightly tag (vX.Y.Z-nightly.YYYYMMDDTHHMM). Empty (the default): the first CLI build this action works with; latest works once the next Viaalink CLI release (after 3.2.6) is out.'
+    default: ''
 
   timeout-minutes:
     description: 'End the session after this many minutes (0 = when the run is cancelled or the job times out)'
@@ -97,6 +97,10 @@ runs:
         INPUT_INTERFACE: ${{ inputs.interface }}
         INPUT_TUNNEL_NAME: ${{ inputs.tunnel-name }}
         INPUT_CLI_VERSION: ${{ inputs.cli-version }}
+        # What an empty cli-version installs: the first CLI build this action
+        # works with (3.2.6 can't publish the terminal socket). The only place
+        # this pin lives; the install steps take the resolved value.
+        DEFAULT_CLI_VERSION: 'v3.2.6-nightly.20261109T1503'
         INPUT_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
         GITHUB_SHA: ${{ github.sha }}
 
@@ -106,7 +110,7 @@ runs:
       run: bash "${SCRIPTS_DIR}/install-cli.sh"
       env:
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
-        REQUESTED_VERSION: ${{ inputs.cli-version }}
+        REQUESTED_VERSION: ${{ steps.credentials.outputs.cli_version }}
         # The installer looks the release up on the GitHub API; the job's
         # token lifts the 60-requests-per-hour anonymous limit.
         GITHUB_TOKEN: ${{ github.token }}
@@ -117,7 +121,7 @@ runs:
       run: '& "$env:SCRIPTS_DIR/install-cli.ps1"'
       env:
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
-        REQUESTED_VERSION: ${{ inputs.cli-version }}
+        REQUESTED_VERSION: ${{ steps.credentials.outputs.cli_version }}
         GITHUB_TOKEN: ${{ github.token }}
 
     - name: Start the interface
