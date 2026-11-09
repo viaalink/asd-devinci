@@ -15,41 +15,36 @@ git add .github/workflows/terminal.yml
 git commit -m "ci: add terminal workflow"
 git push
 
-# Give the repository a relay key (see Set up), then:
+# Store the relay key and the login password as secrets (see Set up), then:
 via gh terminal
 ```
 
-`via gh terminal` asks for the operating system, shell, login and session name, starts the run and prints the URL once the session is up. When sessions are already running it offers to reconnect to one of them.
+`via gh terminal` asks for the operating system, shell, username and session name, starts the run and prints the URL once the session is up. When sessions are already running it offers to reconnect to one of them.
 
 ## Set up
 
-The runner reaches your relay with a device key, kept in repository secrets.
+The runner reaches your relay with a device key, and the login in front of the session uses a password. Both are kept in repository secrets.
 
-1. On a device enrolled on your relay (`via relay add '<invite link>'`), run:
+On a device enrolled on your relay (`via relay add '<invite link>'`), run in your repository:
 
-   ```bash
-   via auth export
-   ```
+```bash
+via gh setup
+```
 
-   It prints four values: the device key, its id, the relay host and the relay SSH port.
+It stores these secrets without printing them:
 
-2. Store them as repository secrets (Settings > Secrets and variables > Actions), or with the GitHub CLI:
+| Secret | What | |
+|--------|------|---|
+| `VIA_TUNNEL_KEY` | the device key (base64) | required |
+| `VIA_TUNNEL_KEY_ID` | the device key's id | required |
+| `VIA_TUNNEL_HOST` | the relay host | required |
+| `VIA_TUNNEL_PORT` | the relay SSH port | optional, 2222 when unset |
+| `VIA_TUNNEL_HOST_KEY_FINGERPRINTS` | the relay's SSH host key fingerprints (`SHA256:...`, comma separated) | required: the CLI never connects to a relay whose host key it cannot pin |
+| `VIA_TERMINAL_PASSWORD` | the password of the login in front of the session | required |
 
-   | Secret | Value from `via auth export` | |
-   |--------|------------------------------|---|
-   | `ASD_TUNNEL_KEY` | the device key (base64) | required |
-   | `ASD_TUNNEL_KEY_ID` | the device key's id | required |
-   | `ASD_TUNNEL_HOST` | the relay host | required |
-   | `ASD_TUNNEL_PORT` | the relay SSH port | optional, 2222 when unset |
+To store them by hand instead, `via auth export` prints the relay values; set each one with `gh secret set <NAME> --repo <owner>/<repo>`.
 
-   ```bash
-   gh secret set ASD_TUNNEL_KEY --repo <owner>/<repo>
-   gh secret set ASD_TUNNEL_KEY_ID --repo <owner>/<repo>
-   gh secret set ASD_TUNNEL_HOST --repo <owner>/<repo>
-   gh secret set ASD_TUNNEL_PORT --repo <owner>/<repo>
-   ```
-
-3. **Enrol a device for CI alone.** Ask your relay for a separate invite link for CI and enrol it on a machine (or container) that has no other relay, so `via auth export` exports that key and not your own. It can then be removed from the relay without touching your own devices.
+**Enrol a device for CI alone.** Ask your relay for a separate invite link for CI and enrol it on a machine (or container) that has no other relay, so the key in the secrets is not your own. It can then be removed from the relay without touching your own devices.
 
 There is no default relay: the session is always published through the relay whose key you give it.
 
@@ -59,19 +54,21 @@ There is no default relay: the session is always published through the relay who
 via gh terminal
 ```
 
-Pick the options, wait for the URL, open it and sign in with the login you chose. The same URL is in the run's summary and in its `tunnel-url` artifact.
+Pick the options, wait for the URL, open it and sign in with the username you chose and the `VIA_TERMINAL_PASSWORD` password. The same URL is in the run's summary and in its `tunnel-url` artifact.
 
 ### In your own workflow
 
-The workflow that `via ci install` writes is self-contained. To add a session to a workflow of your own, use the action:
+`via ci install` writes a short workflow that uses this action. To add a session to a workflow of your own, use the action directly:
 
 ```yaml
 - uses: viaalink/ci-terminal@v2
   with:
-    tunnel-key: ${{ secrets.ASD_TUNNEL_KEY }}
-    tunnel-key-id: ${{ secrets.ASD_TUNNEL_KEY_ID }}
-    tunnel-host: ${{ secrets.ASD_TUNNEL_HOST }}
-    tunnel-port: ${{ secrets.ASD_TUNNEL_PORT }}
+    tunnel-key: ${{ secrets.VIA_TUNNEL_KEY }}
+    tunnel-key-id: ${{ secrets.VIA_TUNNEL_KEY_ID }}
+    tunnel-host: ${{ secrets.VIA_TUNNEL_HOST }}
+    tunnel-port: ${{ secrets.VIA_TUNNEL_PORT }}
+    tunnel-host-key-fingerprints: ${{ secrets.VIA_TUNNEL_HOST_KEY_FINGERPRINTS }}
+    password: ${{ secrets.VIA_TERMINAL_PASSWORD }}
     tunnel-name: debug-${{ github.run_id }}
 ```
 
@@ -96,10 +93,12 @@ jobs:
         if: steps.tests.outcome == 'failure'
         uses: viaalink/ci-terminal@v2
         with:
-          tunnel-key: ${{ secrets.ASD_TUNNEL_KEY }}
-          tunnel-key-id: ${{ secrets.ASD_TUNNEL_KEY_ID }}
-          tunnel-host: ${{ secrets.ASD_TUNNEL_HOST }}
-          tunnel-port: ${{ secrets.ASD_TUNNEL_PORT }}
+          tunnel-key: ${{ secrets.VIA_TUNNEL_KEY }}
+          tunnel-key-id: ${{ secrets.VIA_TUNNEL_KEY_ID }}
+          tunnel-host: ${{ secrets.VIA_TUNNEL_HOST }}
+          tunnel-port: ${{ secrets.VIA_TUNNEL_PORT }}
+          tunnel-host-key-fingerprints: ${{ secrets.VIA_TUNNEL_HOST_KEY_FINGERPRINTS }}
+          password: ${{ secrets.VIA_TERMINAL_PASSWORD }}
           tunnel-name: debug-${{ github.run_id }}
 ```
 
@@ -118,58 +117,56 @@ For VS Code in the browser, add `interface: codeserver`.
 | List the workflows you can start | `via gh list` |
 | Sign the GitHub CLI in | `via gh login` |
 
-A session also ends when you cancel the run on GitHub, or when the job reaches its timeout (`timeout-minutes`; 6 hours in the installed workflow, the GitHub maximum for hosted runners). On the way out the action stops the tunnel, removes the `.env` that held the credentials and marks the deployment inactive.
+A session also ends when you cancel the run on GitHub, when the action's `timeout-minutes` input is reached, or when the job reaches its own `timeout-minutes` (6 hours in the installed workflow, the GitHub maximum for hosted runners). On the way out the action stops the tunnel, removes the `.env` that held the login and marks the deployment inactive.
 
 ## Your own runners
 
 The session works the same on self-hosted runners: choose `self-hosted` as the operating system in `via gh terminal`, or set `runs-on` in your own workflow.
 
-- The runner needs outbound SSH to the relay port (2222 unless `ASD_TUNNEL_PORT` says otherwise), and `bash`, `curl`, `jq` and `openssl`; on Windows, Git Bash and `unzip`.
+- The runner needs outbound SSH to the relay port (2222 unless `VIA_TUNNEL_PORT` says otherwise), HTTPS to GitHub (the CLI installer), and `bash`, `curl` and `jq`; on Windows also PowerShell and Git Bash.
 - Linux, macOS and Windows runners are supported (x64; arm64 on Linux and macOS).
 - A self-hosted runner keeps its disk between jobs. The action removes the `.env` it wrote, but anything you create in the session stays. Prefer ephemeral runners, or a runner dedicated to these sessions.
 
 ## Security notes
 
-- **Whoever can open the terminal can read the relay key on the runner.** The key is in the job's environment. That is why the key belongs to a device enrolled for CI alone: if it leaks, remove that device from the relay.
+- **Whoever can open the terminal can read the relay key on the runner.** The tunnel runs on the runner with that key. That is why the key belongs to a device enrolled for CI alone: if it leaks, remove that device from the relay.
 - Anyone who can start the workflow can open a session with the repository's secrets in reach. Keep `workflow_dispatch` workflows that use this action to people you would give that access.
 - The session is behind a login (basic auth) and served over HTTPS by your relay. The output `url` embeds the login, for one-click access: treat it like a password. Secrets are masked in the logs.
-- `direct: true` connects the relay straight to the interface, without the login the CLI puts in front. Leave it off unless you know why you need it.
+- The relay's host key is pinned (`VIA_TUNNEL_HOST_KEY_FINGERPRINTS`): the runner refuses a relay that does not present it.
 
 ## Inputs
 
 | Input | Description | Default |
 |-------|-------------|---------|
-| `tunnel-key` | Relay device key (`ASD_TUNNEL_KEY` from `via auth export`) | - |
-| `tunnel-key-id` | Relay device key id (`ASD_TUNNEL_KEY_ID`) | - |
-| `tunnel-host` | Relay host (`ASD_TUNNEL_HOST`); required with `tunnel-key` | - |
-| `tunnel-port` | Relay SSH port (`ASD_TUNNEL_PORT`) | 2222 |
-| `interface` | `ttyd` (web terminal) or `codeserver` (VS Code) | `ttyd` |
+| `tunnel-key` | Relay device key (secret `VIA_TUNNEL_KEY`) | required |
+| `tunnel-key-id` | Relay device key id (`VIA_TUNNEL_KEY_ID`) | required |
+| `tunnel-host` | Relay host (`VIA_TUNNEL_HOST`) | required |
+| `tunnel-port` | Relay SSH port (`VIA_TUNNEL_PORT`) | 2222 |
+| `tunnel-host-key-fingerprints` | Relay host key fingerprints (`VIA_TUNNEL_HOST_KEY_FINGERPRINTS`) | required |
+| `password` | Login password (`VIA_TERMINAL_PASSWORD`) | required |
+| `username` | Login username (letters, digits, `.`, `_`, `-`) | `via` |
+| `interface` | `terminal` (ttyd) or `codeserver` (VS Code) | `terminal` |
 | `shell` | `bash`, `zsh` or `powershell` | `bash` |
-| `username` | Login username | `via` |
-| `password` | Login password (generated and masked if empty) | - |
 | `tunnel-name` | Name of the session, the first label of its hostname | short commit SHA |
-| `asd-version` | Viaalink CLI release to install (3.2 or newer) | `latest` |
-| `direct` | Skip the login in front of the interface (see Security notes) | `false` |
-| `client-id`, `client-secret` | Password login to a relay, instead of a key (needs `tunnel-host` and `tunnel-port`) | - |
-| `api-key`, `api-endpoint`, `region`, `ttl-minutes` | Legacy provisioning API; only used when `api-endpoint` is set | - |
+| `cli-version` | Viaalink CLI: `latest`, a release tag or a nightly tag | `latest` |
+| `timeout-minutes` | End the session after this many minutes (0 = at cancel or job timeout) | `0` |
 
 ## Outputs
 
 | Output | Description |
 |--------|-------------|
-| `url` | Session URL with the login embedded |
+| `url` | Session URL with the login embedded (treat it like a password) |
 | `url-base` | Session URL without the login |
-| `tunnel-user` | Relay client id (empty with a relay key) |
-| `local-port` | Port of the interface on the runner |
-| `expires-at` | Credential expiry, when the credential has one |
+| `session-name` | Name the session was published under |
+| `local-port` | Port of the interface on the runner (empty when the terminal listens on a socket, Linux and macOS) |
 
 ## Troubleshooting
 
-**"No relay credentials"**: the `tunnel-key`, `tunnel-key-id` and `tunnel-host` inputs are empty. Check that the secrets exist in this repository (secrets of a fork are not passed to pull-request runs).
+**"Missing inputs"**: a secret is not set, or not passed. Run `via gh setup` in the repository, and check the `with:` block names the `VIA_*` secrets (secrets of a fork are not passed to pull-request runs).
 
-**"Publishing through the relay failed"**: check that the runner can reach the relay's SSH port, that the device is still enrolled on the relay, and that `ASD_TUNNEL_HOST` is the host `via auth export` printed.
+**`via expose` fails**: check that the runner can reach the relay's SSH port, that the device is still enrolled on the relay, that `VIA_TUNNEL_HOST` is the relay's host, and that `VIA_TUNNEL_HOST_KEY_FINGERPRINTS` matches the relay's host key.
 
-**The URL does not answer yet**: the interface can take a few seconds after the URL appears. The run log shows the local port and the health checks.
+**The URL does not answer yet**: the interface can take a few seconds after the URL appears. The run log shows what was published.
 
 ## Also available
 

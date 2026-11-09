@@ -1,8 +1,9 @@
 name: Self-test
 
-# Runs this action from the current checkout. Needs the relay secrets that
-# `via auth export` prints on a device enrolled on your relay:
-# ASD_TUNNEL_KEY, ASD_TUNNEL_KEY_ID, ASD_TUNNEL_HOST and (optional) ASD_TUNNEL_PORT.
+# Runs this action from the current checkout. Needs the secrets `via gh setup`
+# stores: VIA_TUNNEL_KEY, VIA_TUNNEL_KEY_ID, VIA_TUNNEL_HOST,
+# VIA_TUNNEL_HOST_KEY_FINGERPRINTS, VIA_TERMINAL_PASSWORD and (optional)
+# VIA_TUNNEL_PORT.
 
 on:
   workflow_dispatch:
@@ -17,10 +18,10 @@ on:
           - windows-latest
       interface:
         description: 'Interface type'
-        default: 'ttyd'
+        default: 'terminal'
         type: choice
         options:
-          - ttyd
+          - terminal
           - codeserver
       shell:
         description: 'Shell'
@@ -29,15 +30,16 @@ on:
         options:
           - bash
           - zsh
+          - powershell
       username:
         description: 'Login username'
         default: 'via'
-      password:
-        description: 'Login password (empty = generated, shown masked)'
-        required: false
-      asd-version:
-        description: 'Viaalink CLI version (release tag, or latest)'
+      cli-version:
+        description: 'Viaalink CLI version (release tag, nightly tag, or latest)'
         default: 'latest'
+      timeout-minutes:
+        description: 'End the session after this many minutes (0 = at cancel)'
+        default: '0'
 
 concurrency:
   group: ci-terminal-${{ github.actor }}
@@ -54,12 +56,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./
         with:
-          tunnel-key: ${{ secrets.ASD_TUNNEL_KEY }}
-          tunnel-key-id: ${{ secrets.ASD_TUNNEL_KEY_ID }}
-          tunnel-host: ${{ secrets.ASD_TUNNEL_HOST }}
-          tunnel-port: ${{ secrets.ASD_TUNNEL_PORT }}
+          tunnel-key: ${{ secrets.VIA_TUNNEL_KEY }}
+          tunnel-key-id: ${{ secrets.VIA_TUNNEL_KEY_ID }}
+          tunnel-host: ${{ secrets.VIA_TUNNEL_HOST }}
+          tunnel-port: ${{ secrets.VIA_TUNNEL_PORT }}
+          tunnel-host-key-fingerprints: ${{ secrets.VIA_TUNNEL_HOST_KEY_FINGERPRINTS }}
+          password: ${{ secrets.VIA_TERMINAL_PASSWORD }}
           interface: ${{ inputs.interface }}
           shell: ${{ inputs.shell }}
           username: ${{ inputs.username }}
-          password: ${{ inputs.password }}
-          asd-version: ${{ inputs.asd-version }}
+          cli-version: ${{ inputs.cli-version }}
+          timeout-minutes: ${{ inputs.timeout-minutes }}

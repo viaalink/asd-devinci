@@ -19,7 +19,7 @@ SPEC → EXECUTE → EVAL → TRACE → GATE → COMMIT → LEARN
 | Layer | Prove what | How |
 |-------|-----------|-----|
 | Static | Shell scripts are valid | ShellCheck (CI workflow) |
-| Self-test | Action works end-to-end | `.github/workflows/self-test.yml` (needs the relay key secrets) |
+| Self-test | Action works end-to-end | `.github/workflows/self-test.yml` (needs the VIA_* secrets) |
 | CI | Nothing broke upstream | `gh run list` |
 
 ### Working Rules
@@ -33,24 +33,25 @@ SPEC → EXECUTE → EVAL → TRACE → GATE → COMMIT → LEARN
 
 ## Overview
 
-**Viaalink CI Terminal** (repo `viaalink/asd-devinci`, to be renamed `viaalink/ci-terminal`; formerly "DevInCi") is a reusable GitHub Composite Action that puts a browser terminal (ttyd) or VS Code (code-server) on a CI runner and publishes it through the user's own Viaalink Relay, behind a login. There is no default relay and no hosted provisioning API.
+**Viaalink CI Terminal** (repo `viaalink/asd-devinci`, to be renamed `viaalink/ci-terminal`; formerly "DevInCi") is a reusable GitHub Composite Action that puts a browser terminal (ttyd) or VS Code (code-server) on a CI runner and publishes it through the user's own Viaalink Relay, behind a login. There is no default relay (eu.viaal.ink is a production relay, but never a default).
 
 ## Structure
 
 ```
 .
-├── action.yml                         # Composite action definition
+├── action.yml                         # Composite action definition (v2)
 ├── scripts/
 │   ├── lib/
-│   │   └── ci.sh                      # CI platform abstraction layer
-│   ├── setup.sh                       # Download + install the Viaalink CLI (`via`, cross-platform)
-│   ├── provision.sh                   # Check relay credentials (key / password / legacy API)
-│   ├── start-interface.sh             # Start ttyd or code-server
-│   ├── connect.sh                     # `via expose`, read the URL back, outputs + summary
-│   └── keepalive.sh                   # Hold the session, clean up on cancel
+│   │   └── ci.sh                      # CI platform abstraction layer (shared with the GitLab component)
+│   ├── credentials.sh                 # Check every input first (relay key, pins, login, name)
+│   ├── install-cli.sh                 # Official install.sh (release / nightly / latest)
+│   ├── install-cli.ps1                # Official install.ps1 on Windows
+│   ├── start-interface.sh             # Seed the login, via init, start ttyd or code-server
+│   ├── connect.sh                     # via expose, read the URL back, outputs + summary
+│   └── keepalive.sh                   # Hold the session; stop tunnel/deployment/.env at the end
 ├── .github/workflows/
 │   ├── ci.yml                         # CI pipeline (shellcheck, action.yml parses)
-│   ├── self-test.yml                  # Self-test workflow (relay key secrets)
+│   ├── self-test.yml                  # Self-test workflow (VIA_* secrets)
 │   └── release.yml                    # Tag → release + moving major tag
 ├── README.md
 ├── CLAUDE.md
@@ -58,34 +59,45 @@ SPEC → EXECUTE → EVAL → TRACE → GATE → COMMIT → LEARN
 └── .gitignore
 ```
 
+## Single source
+
+The action is the product. It is a faithful port of the CLI's
+`modules/gh/workflows/terminal.yml` (CLI repo); `via ci install` writes a thin
+workflow with `uses: viaalink/ci-terminal@v2`. A change to how a session is
+started, published or stopped goes here first, then the CLI wrapper follows.
+
 ## How It Works
 
-1. Installs the Viaalink CLI (`via`; `asd` stays available as an alias) from the `viaalink/cli` GitHub releases into the 3.2 data directory (`via/bin`). Needs CLI 3.2 or newer.
-2. Checks relay credentials, in this order:
-   - **Relay key** (recommended): `tunnel-key` + `tunnel-key-id` + `tunnel-host` (+ optional `tunnel-port`), the values `via auth export` prints, stored as `ASD_TUNNEL_KEY`, `ASD_TUNNEL_KEY_ID`, `ASD_TUNNEL_HOST`, `ASD_TUNNEL_PORT` secrets.
-   - **Password login**: `client-id` + `client-secret` + `tunnel-host` + `tunnel-port`.
-   - **Legacy provisioning API**: `api-key` or ephemeral, only when `api-endpoint` is set explicitly (no default; api.asd.host is gone).
-3. Starts the interface (`via ttyd start` or `via codeserver start`).
-4. Publishes with `via expose <port> <name>` and reads the URL back from `via expose list --json` (never assembled by hand: shared and dedicated relays shape hostnames differently).
-5. Uploads the `tunnel-url` artifact (`via gh terminal` reads it), then keeps the job alive until the run is cancelled.
+1. `credentials.sh` checks the inputs: relay key, key id, host, optional port,
+   host key fingerprints, login password, username (`[A-Za-z0-9._-]+`), session
+   name (DNS label), interface (`terminal` | `codeserver`).
+2. Installs the Viaalink CLI with the official installer (`cli-version`:
+   latest, release tag or nightly tag; nightlies via `VIA_INSTALL_BASE_URL`).
+3. Seeds the login into `.env` (escaped), `via init --yes`, then
+   `via ttyd start` or `via codeserver start`. The login is also step env.
+4. `via expose ttyd <name>` (socket, Linux/macOS) or `via expose <port> <name>`
+   (Windows, code-server); the URL is read back from `via expose list --json`.
+5. Uploads the `tunnel-url` artifact (`via gh terminal` reads it), then keeps
+   the job alive until cancel, job timeout or the `timeout-minutes` input.
 
 ## Key Design Decisions
 
-- **CI-agnostic scripts**: Scripts use `scripts/lib/ci.sh` abstraction layer (shared with GitLab component in separate repo)
-- **No default relay**: credentials always come from inputs; there is no fallback host
-- **No hardcoded port defaults**: Ports come from tpl.env / `via env init`, parsed from `via ttyd|codeserver start` output
-- **Env var names**: the CLI still reads `ASD_*` (ASD_TUNNEL_*, ASD_TTYD_*, ASD_BIN_DIR); do not invent `VIA_*` aliases here
-- **direct**: optional `--direct` for `via expose` (skips the login in front)
+- **No default relay**, no provisioning API, no legacy modes (v2)
+- **Secrets are `VIA_*`**; the runner env uses the `ASD_*` names every CLI release reads (the CLI copies VIA_X onto ASD_X from 3.2 on). Do not add other aliases.
+- **URL never assembled**: shared and dedicated relays shape hostnames differently
+- **Host key pinning is never skipped** (`tunnel-host-key-fingerprints` is required)
 
 ## Consumer Usage
 
 ```yaml
 - uses: viaalink/ci-terminal@v2
   with:
-    tunnel-key: ${{ secrets.ASD_TUNNEL_KEY }}
-    tunnel-key-id: ${{ secrets.ASD_TUNNEL_KEY_ID }}
-    tunnel-host: ${{ secrets.ASD_TUNNEL_HOST }}
-    tunnel-port: ${{ secrets.ASD_TUNNEL_PORT }}
+    tunnel-key: ${{ secrets.VIA_TUNNEL_KEY }}
+    tunnel-key-id: ${{ secrets.VIA_TUNNEL_KEY_ID }}
+    tunnel-host: ${{ secrets.VIA_TUNNEL_HOST }}
+    tunnel-port: ${{ secrets.VIA_TUNNEL_PORT }}
+    tunnel-host-key-fingerprints: ${{ secrets.VIA_TUNNEL_HOST_KEY_FINGERPRINTS }}
+    password: ${{ secrets.VIA_TERMINAL_PASSWORD }}
 ```
 
 `viaalink/ci-terminal@v2` resolves only after the repo rename and a v2 tag.
