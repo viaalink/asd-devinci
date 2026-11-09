@@ -53,8 +53,8 @@ inputs:
     default: ''
 
   cli-version:
-    description: 'Viaalink CLI to install: latest, a release tag (vX.Y.Z) or a nightly tag (vX.Y.Z-nightly.YYYYMMDDTHHMM)'
-    default: 'latest'
+    description: 'Viaalink CLI to install: latest, a release tag (vX.Y.Z) or a nightly tag (vX.Y.Z-nightly.YYYYMMDDTHHMM). The default is the first CLI build this action works with; latest works once the next Viaalink CLI release (after 3.2.6) is out.'
+    default: 'v3.2.6-nightly.20261109T1503'
 
   timeout-minutes:
     description: 'End the session after this many minutes (0 = when the run is cancelled or the job times out)'
