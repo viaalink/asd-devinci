@@ -72,6 +72,10 @@ note_checkout_before() {
     # Files and symlinks (dangling ones too) are kept as they are; a
     # directory by that name is only noted, and never touched.
     if [ -L "$f" ] || [ -f "$f" ]; then cp -P -p "$f" "$snap/files/$f"; fi
+    # A link to a regular file: via init writes the session .env (with the
+    # login) through it into that file, which may be outside the checkout.
+    # Keep the file's content too.
+    if [ -L "$f" ] && [ -f "$f" ]; then cp -p "$f" "$snap/files/$f.link-target"; fi
   done
   if [ -f .gitignore ]; then
     cp -p .gitignore "$snap/gitignore"
@@ -155,6 +159,21 @@ restore_checkout_in_root() {
       cleanup_log "Restored the repository's own ${f}."
     else
       cleanup_log "Warning: could not restore the repository's own ${f}; its copy stays in ${snap}/files for the next try."
+      failed=1
+      continue
+    fi
+  done < "$snap/had-files"
+  # Content of the files the repository's .env.bak* links point to (written
+  # through by via init), put back through the link.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    local was="$snap/files/$f.link-target"
+    [ -f "$was" ] && [ -L "$f" ] || continue
+    cmp -s -- "$was" "$f" && continue
+    if cat -- "$was" > "$f"; then
+      cleanup_log "Restored the content of the file ${f} links to (via init had written the session .env, with the login, into it)."
+    else
+      cleanup_log "Warning: could not restore the file ${f} links to; it may hold the session login. Its copy stays in ${snap}/files for the next try."
       failed=1
     fi
   done < "$snap/had-files"
@@ -252,6 +271,9 @@ cleanup_session() {
   # 1. The exposure: after this the relay address is no longer public.
   if [ -f "$state/exposed" ]; then
     did=1
+    # A failed expose stop does not set stop-failed: the tunnel client runs
+    # from the CLI's install (RUNNER_TEMP), not from workspace/, and the
+    # relay drops the address when the runner disconnects.
     if [ -n "${SESSION_NAME:-}" ] && via expose stop "${SESSION_NAME}" >/dev/null 2>&1; then
       cleanup_log "Stopped the exposure '${SESSION_NAME}' (via expose stop)."
     else

@@ -234,6 +234,17 @@ printf 'TARGET=1\n' > "$T4E/repo/target"
 start_session "$T4E"
 (cd "$T4E/repo" && PATH="$T4E/bin:$PATH" bash "$SCRIPTS/cleanup.sh" >/dev/null 2>&1)
 check "dangling .env.bak.link kept" test "$(readlink "$T4E/repo/.env.bak.link")" = "/nonexistent/target"
+T4K="$(mktemp -d)"
+make_stubs "$T4K"
+mkdir -p "$T4K/repo" "$T4K/outside"
+printf 'ORIG=1\n' > "$T4K/outside/file"
+ln -s "$T4K/outside/file" "$T4K/repo/.env.bak"
+start_session "$T4K"   # the stub via init writes the session .env through the link
+check "via init wrote the login through the link (test premise)" grep -q "ASD_BASIC_AUTH_PASSWORD" "$T4K/outside/file"
+FINAL4K="$(cd "$T4K/repo" && PATH="$T4K/bin:$PATH" bash "$SCRIPTS/cleanup.sh" 2>&1)"
+check "the link is kept" test "$(readlink "$T4K/repo/.env.bak")" = "$T4K/outside/file"
+check "the file it points to has its own content again" test "$(cat "$T4K/outside/file")" = "ORIG=1"
+check "and that is logged" grep -q "Restored the content of the file .env.bak links to" <<<"$FINAL4K"
 T4F="$(mktemp -d)"
 make_stubs "$T4F"
 mkdir -p "$T4F/repo"
@@ -327,7 +338,7 @@ echo "# 5. Nothing started: the final step says so"
 FINAL5="$(STATE_DIR="" bash "$SCRIPTS/cleanup.sh" 2>&1)"
 check "explains why there is nothing to do" grep -q "Nothing to do: no session state" <<<"$FINAL5"
 
-rm -rf "$T1" "$T1B" "$T2" "$T3" "$T4" "$T4B" "$T4C" "$T4D" "$T4E" "$T4F" "$T4G" "$T4H" "$T4I" "$T4J" "$T6"
+rm -rf "$T1" "$T1B" "$T2" "$T3" "$T4" "$T4B" "$T4C" "$T4D" "$T4E" "$T4K" "$T4F" "$T4G" "$T4H" "$T4I" "$T4J" "$T6"
 if [ "$FAILS" -gt 0 ]; then
   echo "$FAILS check(s) failed"
   exit 1

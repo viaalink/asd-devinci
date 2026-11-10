@@ -7,8 +7,9 @@
 # runner's %LOCALAPPDATA%\via, and no change to the user's PATH in the
 # registry. The job's PATH and ASD_HOME/VIA_HOME point at it for the rest of
 # the job, the caller's later steps included. The CLI's config directory
-# (%APPDATA%\via otherwise) follows XDG_CONFIG_HOME, which the action's own
-# steps set to <state>\cli\config (action.yml).
+# (%APPDATA%\via otherwise; XDG_CONFIG_HOME wins on every platform) follows
+# XDG_CONFIG_HOME, which every step of the action, this one too (the
+# installer runs via --version), sets to <state>\cli\config (action.yml).
 $ErrorActionPreference = "Stop"
 $env:VERSION = if ($env:REQUESTED_VERSION -eq "latest" -or -not $env:REQUESTED_VERSION) { "" } else { $env:REQUESTED_VERSION }
 # A nightly is a prerelease on viaalink/cli-nightly, which the installer does
