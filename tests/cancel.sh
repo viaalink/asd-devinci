@@ -143,6 +143,21 @@ check "no keep-alive sleep left" no_sleep_left
 check "final step says why there is nothing left" \
   grep -q "Nothing left to do: the session was already ended by the keep-alive step (cancelled)" <<<"$FINAL1"
 
+echo "# 1c. Keep-alive stopped after its last part, before ended (self-hosted)"
+T1C="$(mktemp -d)"
+make_stubs "$T1C"
+start_session "$T1C"
+(cd "$T1C/repo" && PATH="$T1C/bin:$PATH" CLEANUP_BY="the keep-alive step (cancelled)" \
+  bash "$SCRIPTS/cleanup.sh" >/dev/null 2>&1)
+rm -f "$T1C/state/ended"   # killed before it could write ended
+FINAL1C="$(cd "$T1C/repo" && PATH="$T1C/bin:$PATH" DEPLOY_ID=123 bash "$SCRIPTS/cleanup.sh" 2>&1)"
+check "final step still marks the deployment inactive" grep -q "Marked deployment 123 inactive" <<<"$FINAL1C"
+check "final step says the keep-alive step ended the session" \
+  grep -q "Nothing left to do: the session was already ended by the keep-alive step (cancelled)" <<<"$FINAL1C"
+check "and not that nothing was started" bash -c "! grep -q 'nothing was started yet' <<<\"\$1\"" _ "$FINAL1C"
+check "a third caller says the same" \
+  grep -q "already ended by the keep-alive step (cancelled)" <<<"$(cd "$T1C/repo" && PATH="$T1C/bin:$PATH" bash "$SCRIPTS/cleanup.sh" 2>&1)"
+
 echo "# 1b. Cancel arriving as SIGTERM (the runner's second signal)"
 T1B="$(mktemp -d)"
 make_stubs "$T1B"
@@ -338,7 +353,7 @@ echo "# 5. Nothing started: the final step says so"
 FINAL5="$(STATE_DIR="" bash "$SCRIPTS/cleanup.sh" 2>&1)"
 check "explains why there is nothing to do" grep -q "Nothing to do: no session state" <<<"$FINAL5"
 
-rm -rf "$T1" "$T1B" "$T2" "$T3" "$T4" "$T4B" "$T4C" "$T4D" "$T4E" "$T4K" "$T4F" "$T4G" "$T4H" "$T4I" "$T4J" "$T6"
+rm -rf "$T1" "$T1B" "$T1C" "$T2" "$T3" "$T4" "$T4B" "$T4C" "$T4D" "$T4E" "$T4K" "$T4F" "$T4G" "$T4H" "$T4I" "$T4J" "$T6"
 if [ "$FAILS" -gt 0 ]; then
   echo "$FAILS check(s) failed"
   exit 1

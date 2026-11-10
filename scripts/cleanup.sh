@@ -6,7 +6,10 @@
 # and removed right after the part is done: a cleanup that is killed half way
 # (cancel: SIGINT, then SIGTERM, then SIGKILL) leaves the rest to the next
 # caller, the action's final if: always() step. When everything is done the
-# directory keeps only `ended` (who ended the session, and when).
+# directory keeps only `ended` (who ended the session, and when). `ending`
+# is written as soon as a cleanup with work to do starts: a caller killed
+# after the last part but before `ended` (the deployment, on a slow runner)
+# leaves it, and the next caller still says who ended the session.
 #
 #   STATE_DIR      per-session state (credentials.sh)
 #   SESSION_NAME   the published name
@@ -16,7 +19,7 @@
 # Markers: exposed, interface (terminal|codeserver), caddy-before,
 # caddy-started,
 # env-seeded (+ env.backup), checkout-noted (+ checkout/), stop-failed,
-# tunnel-url.txt.
+# tunnel-url.txt. Who ends it: ending, ended.
 
 # Whether a Caddy process runs on this machine (0 = yes, 1 = no, 2 = cannot tell).
 caddy_running() {
@@ -268,6 +271,13 @@ cleanup_session() {
 
   local did=0
 
+  # Who ends the session, written before the first part: see the header.
+  if [ ! -f "$state/ending" ] && { [ -f "$state/exposed" ] || [ -f "$state/interface" ] \
+     || [ -f "$state/caddy-started" ] || [ -f "$state/env-seeded" ] \
+     || [ -f "$state/checkout-noted" ]; }; then
+    echo "${by} at $(date -u '+%H:%M:%S UTC')" > "$state/ending"
+  fi
+
   # 1. The exposure: after this the relay address is no longer public.
   if [ -f "$state/exposed" ]; then
     did=1
@@ -370,6 +380,12 @@ cleanup_session() {
   fi
 
   rm -f "$state/tunnel-url.txt"
+  if [ "$did" -eq 0 ] && [ -f "$state/ending" ]; then
+    # An earlier caller did every part but was stopped before `ended`.
+    cleanup_log "Nothing left to do: the session was already ended by $(cat "$state/ending")."
+    cp "$state/ending" "$state/ended"
+    return 0
+  fi
   if [ "$did" -eq 0 ]; then
     cleanup_log "Nothing to do: nothing was started yet (no markers in ${state})."
   fi
