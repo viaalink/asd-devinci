@@ -15,7 +15,7 @@
 #
 # Markers: exposed, interface (terminal|codeserver), caddy-before,
 # caddy-started,
-# env-seeded (+ env.backup), tunnel-url.txt.
+# env-seeded (+ env.backup), checkout-noted (+ checkout/), tunnel-url.txt.
 
 # Whether a Caddy process runs on this machine (0 = yes, 1 = no, 2 = cannot tell).
 caddy_running() {
@@ -51,6 +51,111 @@ cleanup_log() {
   echo "[cleanup] $*"
 }
 
+# What `via init` writes into the checkout besides .env: a copy of .env before
+# each rewrite (.env.bak, .env.bak.1, ...: mode 0600, with the login in it),
+# lines appended to .gitignore, its runtime state in the workspace directory
+# (ASD_WORKSPACE_DIR, workspace/ in action.yml) and .asd/. Called in the
+# checkout before the action seeds .env: notes which of these the repository
+# already had, and keeps a copy of its backups and .gitignore, so the cleanup
+# removes or reverts only what the session added.
+note_checkout_before() {
+  local snap="${STATE_DIR}/checkout" f d
+  rm -rf "$snap"
+  mkdir -p "$snap/files"
+  pwd > "$snap/root"
+  : > "$snap/had-files"
+  for f in .env.bak .env.bak.*; do
+    [ -f "$f" ] || continue
+    cp -p "$f" "$snap/files/$f"
+    echo "$f" >> "$snap/had-files"
+  done
+  if [ -f .gitignore ]; then
+    cp -p .gitignore "$snap/gitignore"
+  else
+    touch "$snap/no-gitignore"
+  fi
+  : > "$snap/dirs"
+  : > "$snap/had-dirs"
+  local ws="${ASD_WORKSPACE_DIR:-$PWD/workspace}"
+  # Windows: github.workspace is D:\a\..., Git Bash's PWD is /d/a/...
+  if command -v cygpath >/dev/null 2>&1; then ws=$(cygpath -u "$ws"); fi
+  for d in "$ws" "$PWD/.asd"; do
+    echo "$d" >> "$snap/dirs"
+    if [ -e "$d" ]; then echo "$d" >> "$snap/had-dirs"; fi
+  done
+  touch "${STATE_DIR}/checkout-noted"
+}
+
+# Removes the .env backups, .gitignore lines and directories the session
+# added (see note_checkout_before), and puts back the repository's own.
+# Runs in the checkout, after the interface, the exposure and Caddy stopped.
+restore_checkout() {
+  local snap="$1/checkout" root f d rel
+  root=$(cat "$snap/root" 2>/dev/null || pwd)
+
+  # .env backups: the CLI's copies of the session .env hold the login.
+  for f in .env.bak .env.bak.*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    if grep -qxF -- "$f" "$snap/had-files" 2>/dev/null; then continue; fi
+    if rm -f -- "$f"; then
+      cleanup_log "Removed ${f} (a copy of the session's .env, with the login, written by via init)."
+    else
+      cleanup_log "Warning: could not remove ${f}; it holds the session login."
+    fi
+  done
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if ! cmp -s "$snap/files/$f" "$f" 2>/dev/null; then
+      cp -p "$snap/files/$f" "$f"
+      cleanup_log "Restored the repository's own ${f}."
+    fi
+  done < "$snap/had-files"
+
+  # .gitignore: via init appends its .env and .asd rules.
+  if [ -f "$snap/gitignore" ]; then
+    local size
+    size=$(wc -c < "$snap/gitignore")
+    if [ ! -f .gitignore ]; then
+      cp -p "$snap/gitignore" .gitignore
+      cleanup_log "Restored the repository's own .gitignore (it was gone)."
+    elif cmp -s "$snap/gitignore" .gitignore; then
+      :
+    elif head -c "$size" .gitignore | cmp -s - "$snap/gitignore"; then
+      cp -p "$snap/gitignore" .gitignore
+      cleanup_log "Reverted .gitignore: removed the lines via init appended."
+    else
+      cleanup_log "Left .gitignore as it is: it changed beyond the lines via init appends (edited during the session?)."
+    fi
+  elif [ -f "$snap/no-gitignore" ] && [ -f .gitignore ]; then
+    if grep -q '(added by \.asd)' .gitignore; then
+      rm -f .gitignore
+      cleanup_log "Removed the .gitignore via init created (the repository had none)."
+    else
+      cleanup_log "Left .gitignore: the repository had none, but this one was not written by via init."
+    fi
+  fi
+
+  # Directories: only ones that did not exist before, inside the checkout.
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    rel="${d#"$root"/}"
+    if grep -qxF -- "$d" "$snap/had-dirs" 2>/dev/null; then
+      cleanup_log "Left ${rel}/ in place: it was there before the session."
+      continue
+    fi
+    [ -e "$d" ] || continue
+    case "$d" in
+      "$root"/?*) ;;
+      *) cleanup_log "Left ${d}: it is outside the checkout."; continue ;;
+    esac
+    if rm -rf -- "$d"; then
+      cleanup_log "Removed ${rel}/ (the CLI's runtime state, created by this session)."
+    else
+      cleanup_log "Warning: could not remove ${rel}/ completely."
+    fi
+  done < "$snap/dirs"
+}
+
 cleanup_session() {
   local state="${STATE_DIR:-}"
   local by="${CLEANUP_BY:-cleanup}"
@@ -64,7 +169,8 @@ cleanup_session() {
     return 0
   fi
   if [ -f "$state/ended" ] && [ ! -f "$state/exposed" ] && [ ! -f "$state/interface" ] \
-     && [ ! -f "$state/caddy-started" ] && [ ! -f "$state/env-seeded" ]; then
+     && [ ! -f "$state/caddy-started" ] && [ ! -f "$state/env-seeded" ] \
+     && [ ! -f "$state/checkout-noted" ]; then
     cleanup_log "Nothing left to do: the session was already ended by $(cat "$state/ended")."
     return 0
   fi
@@ -148,7 +254,16 @@ cleanup_session() {
     rm -f "$state/env-seeded"
   fi
 
-  # 5. The deployment button.
+  # 5. What via init added next to .env: its backups of .env (with the
+  #    login), its .gitignore lines, workspace/ and .asd/.
+  if [ -f "$state/checkout-noted" ]; then
+    did=1
+    restore_checkout "$state"
+    rm -rf "$state/checkout"
+    rm -f "$state/checkout-noted"
+  fi
+
+  # 6. The deployment button.
   if [ -n "${DEPLOY_ID:-}" ] && command -v ci_deactivate_deployment >/dev/null 2>&1; then
     ci_deactivate_deployment "${DEPLOY_ID}"
     cleanup_log "Marked deployment ${DEPLOY_ID} inactive."

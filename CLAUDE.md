@@ -74,7 +74,11 @@ started, published or stopped goes here first, then the CLI wrapper follows.
    host key fingerprints, login password, username (`[A-Za-z0-9._-]+`), session
    name (DNS label), interface (`terminal` | `codeserver`).
 2. Installs the Viaalink CLI with the official installer (`cli-version`:
-   latest, release tag or nightly tag; nightlies via `VIA_INSTALL_BASE_URL`).
+   latest, release tag or nightly tag; nightlies via `VIA_INSTALL_BASE_URL`)
+   into `$STATE_DIR/cli` (`INSTALL_DIR` bin, `ASD_HOME`/`VIA_HOME` home,
+   no PATH/profile edits), then `GITHUB_PATH` + `ASD_HOME`/`VIA_HOME` in
+   `GITHUB_ENV` for the rest of the job. Never the runner's `~/.local/bin`:
+   a self-hosted runner's other jobs keep their CLI.
 3. Seeds the login into `.env` (escaped), `via init --yes`, then
    `via ttyd start` or `via codeserver start`. The login is also step env.
 4. `via expose ttyd <name>` (socket, Linux/macOS) or `via expose <port> <name>`
@@ -85,12 +89,16 @@ started, published or stopped goes here first, then the CLI wrapper follows.
 6. `cleanup.sh` (from the failing step's trap, keepalive's trap and a final
    `if: always()` step): stop the exposure, the interface and the Caddy the
    action started, restore the repository's `.env` from the backup (or remove
-   it), deployment inactive. One `[cleanup]` log line per part; each part's
+   it), take back what `via init` added to the checkout (`.env.bak*` copies
+   with the login, appended `.gitignore` lines, `workspace/`, `.asd/`; noted
+   by `note_checkout_before` so what the repository had is kept), deployment
+   inactive. One `[cleanup]` log line per part; each part's
    marker is removed when done, so a killed cleanup leaves the rest to the
    next caller. keepalive.sh kills its background sleep first: left alive it
    holds the step's output open and the trap's log is lost.
    Session state (backup, markers, URL file) lives in `$RUNNER_TEMP/ci-terminal-<session>`;
-   steps pass values as step outputs, never `$GITHUB_ENV`.
+   steps pass values as step outputs, never `$GITHUB_ENV` (the one exception:
+   the job-scoped CLI's `ASD_HOME`/`VIA_HOME`, next to its `GITHUB_PATH` entry).
 
 ## Key Design Decisions
 

@@ -126,9 +126,13 @@ On the way out, and also when a step of the action fails, the action:
 - stops the exposure (`via expose stop`), so the relay address is no longer public, and the terminal or VS Code server;
 - stops Caddy if the action started it (a Caddy that was already running is left alone);
 - puts back the repository's own `.env` exactly as it was before the session (the login lines and whatever `via init` added are gone), or removes `.env` if the repository had none;
+- removes the copies of `.env` that `via init` writes (`.env.bak`, `.env.bak.1`, ...; they hold the login), and puts back any `.env.bak` the repository already had;
+- takes the lines `via init` appended to `.gitignore` back out, and removes the `workspace/` and `.asd/` directories the session created (ones the repository already had are left alone);
 - marks the deployment inactive.
 
-The log has one `[cleanup]` line for each of these, or says why there was nothing to do. A final `if: always()` step repeats this for anything a cancelled step could not finish. Other files the session created (`via init` output, the `workspace/` directory, anything you made in the terminal) stay.
+The log has one `[cleanup]` line for each of these, or says why there was nothing to do. A final `if: always()` step repeats this for anything a cancelled step could not finish. Anything else you made in the checkout from the terminal stays.
+
+The CLI itself is installed for the job only, in the runner's temporary directory (`RUNNER_TEMP`) and on the job's `PATH`; a `via` the runner already has (`~/.local/bin/via`) is not replaced.
 
 ## Your own runners
 
@@ -136,7 +140,7 @@ The session works the same on self-hosted runners: choose `self-hosted` as the o
 
 - The runner needs outbound SSH to the relay port (2222 unless `VIA_TUNNEL_PORT` says otherwise), HTTPS to GitHub (the CLI installer), and `bash`, `curl` and `jq`; on Windows also PowerShell and Git Bash.
 - Linux, macOS and Windows runners are supported (x64; arm64 on Linux and macOS).
-- A self-hosted runner keeps its disk between jobs. The action restores `.env` (see above), but anything else the session created stays. Prefer ephemeral runners, or a runner dedicated to these sessions.
+- A self-hosted runner keeps its disk between jobs. The action leaves the checkout as it found it (see above) and installs the CLI for the job only, so other jobs on the runner keep the `via` they had. What you do in the terminal itself (files outside the checkout, programs you install, processes you leave running) stays: prefer ephemeral runners, or a runner dedicated to these sessions.
 
 ## Security notes
 

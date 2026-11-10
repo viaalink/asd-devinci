@@ -110,6 +110,9 @@ runs:
       run: bash "${SCRIPTS_DIR}/install-cli.sh"
       env:
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
+        # The CLI goes into this session's state directory (RUNNER_TEMP), on
+        # the job's PATH only: a self-hosted runner's own via stays as it is.
+        STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
         REQUESTED_VERSION: ${{ steps.credentials.outputs.cli_version }}
         # The installer looks the release up on the GitHub API; the job's
         # token lifts the 60-requests-per-hour anonymous limit.
@@ -121,6 +124,7 @@ runs:
       run: '& "$env:SCRIPTS_DIR/install-cli.ps1"'
       env:
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
+        STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
         REQUESTED_VERSION: ${{ steps.credentials.outputs.cli_version }}
         GITHUB_TOKEN: ${{ github.token }}
 
@@ -206,7 +210,8 @@ runs:
 
     # Runs whatever the steps above could not: stop the exposure, the
     # interface and the Caddy this action started, restore (or remove) .env,
-    # mark the deployment inactive. Logs each thing it does, or why there
+    # take back what via init added to the checkout (.env backups, .gitignore
+    # lines, workspace/, .asd/), mark the deployment inactive. Logs each thing it does, or why there
     # was nothing left to do.
     - name: End the session
       if: always()

@@ -42,6 +42,9 @@ envq() {
 # of the published route is that one, and without it `via init` generates a
 # hub login the laptop does not know (every request answered 401).
 # Keep the repository's own .env to restore at the end (cleanup.sh).
+# What via init writes besides .env (its .env backups, .gitignore lines,
+# workspace/, .asd/) is noted first, so the cleanup takes back only that.
+note_checkout_before
 if [ -f .env ]; then
   cp -p .env "${STATE_DIR}/env.backup"
 fi
