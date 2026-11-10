@@ -75,10 +75,13 @@ started, published or stopped goes here first, then the CLI wrapper follows.
    name (DNS label), interface (`terminal` | `codeserver`).
 2. Installs the Viaalink CLI with the official installer (`cli-version`:
    latest, release tag or nightly tag; nightlies via `VIA_INSTALL_BASE_URL`)
-   into `$STATE_DIR/cli` (`INSTALL_DIR` bin, `ASD_HOME`/`VIA_HOME` home,
-   no PATH/profile edits), then `GITHUB_PATH` + `ASD_HOME`/`VIA_HOME` in
+   into `$STATE_DIR/cli` (`ASD_HOME`/`VIA_HOME` = `cli/home`; `INSTALL_DIR` =
+   `cli/bin` on Linux/macOS, `cli\home\bin` on Windows, the installers'
+   own layouts; no PATH/profile/registry edits), then `GITHUB_PATH` + `ASD_HOME`/`VIA_HOME` in
    `GITHUB_ENV` for the rest of the job. Never the runner's `~/.local/bin`:
-   a self-hosted runner's other jobs keep their CLI.
+   a self-hosted runner's other jobs keep their CLI. The action's own steps
+   set `XDG_CONFIG_HOME=$STATE_DIR/cli/config` (step env, not the job): the
+   CLI's config dir (relay registry, ~/.config/asd -> via move) follows it.
 3. Seeds the login into `.env` (escaped), `via init --yes`, then
    `via ttyd start` or `via codeserver start`. The login is also step env.
 4. `via expose ttyd <name>` (socket, Linux/macOS) or `via expose <port> <name>`

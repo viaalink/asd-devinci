@@ -15,7 +15,8 @@
 #
 # Markers: exposed, interface (terminal|codeserver), caddy-before,
 # caddy-started,
-# env-seeded (+ env.backup), checkout-noted (+ checkout/), tunnel-url.txt.
+# env-seeded (+ env.backup), checkout-noted (+ checkout/), stop-failed,
+# tunnel-url.txt.
 
 # Whether a Caddy process runs on this machine (0 = yes, 1 = no, 2 = cannot tell).
 caddy_running() {
@@ -57,17 +58,20 @@ cleanup_log() {
 # (ASD_WORKSPACE_DIR, workspace/ in action.yml) and .asd/. Called in the
 # checkout before the action seeds .env: notes which of these the repository
 # already had, and keeps a copy of its backups and .gitignore, so the cleanup
-# removes or reverts only what the session added.
+# removes or reverts only what the session added. `complete` is written last:
+# a snapshot without it is never acted on.
 note_checkout_before() {
   local snap="${STATE_DIR}/checkout" f d
   rm -rf "$snap"
   mkdir -p "$snap/files"
-  pwd > "$snap/root"
+  pwd -P > "$snap/root"
   : > "$snap/had-files"
   for f in .env.bak .env.bak.*; do
-    [ -f "$f" ] || continue
-    cp -p "$f" "$snap/files/$f"
+    [ -e "$f" ] || [ -L "$f" ] || continue
     echo "$f" >> "$snap/had-files"
+    # Files and symlinks (dangling ones too) are kept as they are; a
+    # directory by that name is only noted, and never touched.
+    if [ -L "$f" ] || [ -f "$f" ]; then cp -P -p "$f" "$snap/files/$f"; fi
   done
   if [ -f .gitignore ]; then
     cp -p .gitignore "$snap/gitignore"
@@ -81,48 +85,107 @@ note_checkout_before() {
   if command -v cygpath >/dev/null 2>&1; then ws=$(cygpath -u "$ws"); fi
   for d in "$ws" "$PWD/.asd"; do
     echo "$d" >> "$snap/dirs"
-    if [ -e "$d" ]; then echo "$d" >> "$snap/had-dirs"; fi
+    if [ -e "$d" ] || [ -L "$d" ]; then echo "$d" >> "$snap/had-dirs"; fi
   done
+  touch "$snap/complete"
   touch "${STATE_DIR}/checkout-noted"
+}
+
+# The physical path of $1 without following $1 itself (it may be a symlink
+# the session made): its parent resolved, `.` and `..` gone. Empty when the
+# parent does not exist or the last part is `.` or `..`.
+physical_path() {
+  local base parent
+  base=$(basename -- "$1")
+  case "$base" in .|..|/) return 0 ;; esac
+  parent=$(cd -- "$(dirname -- "$1")" 2>/dev/null && pwd -P) || return 0
+  if [ "$parent" = / ]; then echo "/$base"; else echo "$parent/$base"; fi
 }
 
 # Removes the .env backups, .gitignore lines and directories the session
 # added (see note_checkout_before), and puts back the repository's own.
-# Runs in the checkout, after the interface, the exposure and Caddy stopped.
+# Runs after the interface, the exposure and Caddy stopped; works in the
+# checkout the snapshot was taken in. Returns non-zero when something could
+# not be restored: the caller then keeps the snapshot for the next try.
 restore_checkout() {
-  local snap="$1/checkout" root f d rel
-  root=$(cat "$snap/root" 2>/dev/null || pwd)
+  local state="$1" snap="$1/checkout" root
+  local f
+  for f in complete root had-files dirs had-dirs; do
+    if [ ! -f "$snap/$f" ]; then
+      cleanup_log "Left the checkout's .env backups, .gitignore, workspace/ and .asd/ as they are: the note of what the repository had is incomplete (${f} missing), so nothing can be told apart."
+      return 0
+    fi
+  done
+  root=$(cat "$snap/root")
+  if [ -z "$root" ] || [ "$root" = / ] || [ ! -d "$root" ]; then
+    cleanup_log "Left the checkout's .env backups, .gitignore, workspace/ and .asd/ as they are: no usable checkout path in the note (${root:-empty})."
+    return 0
+  fi
+  ( cd -- "$root" && restore_checkout_in_root "$state" "$snap" "$root" )
+}
+
+restore_checkout_in_root() {
+  local state="$1" snap="$2" root="$3" f d rel real failed=0
 
   # .env backups: the CLI's copies of the session .env hold the login.
   for f in .env.bak .env.bak.*; do
     [ -e "$f" ] || [ -L "$f" ] || continue
-    if grep -qxF -- "$f" "$snap/had-files" 2>/dev/null; then continue; fi
+    if grep -qxF -- "$f" "$snap/had-files"; then continue; fi
+    if [ -d "$f" ] && [ ! -L "$f" ]; then
+      cleanup_log "Left ${f}/: a directory, not one of the .env copies via init writes."
+      continue
+    fi
     if rm -f -- "$f"; then
       cleanup_log "Removed ${f} (a copy of the session's .env, with the login, written by via init)."
     else
       cleanup_log "Warning: could not remove ${f}; it holds the session login."
+      failed=1
     fi
   done
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    if ! cmp -s "$snap/files/$f" "$f" 2>/dev/null; then
-      cp -p "$snap/files/$f" "$f"
+    local kept="$snap/files/$f"
+    [ -e "$kept" ] || [ -L "$kept" ] || continue  # a directory: never touched
+    if [ -L "$kept" ]; then
+      [ -L "$f" ] && [ "$(readlink -- "$f")" = "$(readlink -- "$kept")" ] && continue
+    elif [ -f "$f" ] && [ ! -L "$f" ] && cmp -s -- "$kept" "$f"; then
+      continue
+    fi
+    if rm -f -- "$f" && cp -P -p -- "$kept" "$f"; then
       cleanup_log "Restored the repository's own ${f}."
+    else
+      cleanup_log "Warning: could not restore the repository's own ${f}; its copy stays in ${snap}/files for the next try."
+      failed=1
     fi
   done < "$snap/had-files"
 
   # .gitignore: via init appends its .env and .asd rules.
   if [ -f "$snap/gitignore" ]; then
-    local size
-    size=$(wc -c < "$snap/gitignore")
+    local size appended=0
+    size=$(wc -c < "$snap/gitignore" | tr -d ' ')
+    if [ -f .gitignore ] && ! cmp -s "$snap/gitignore" .gitignore; then
+      # The original, then more lines: what via init does. (No head -c 0:
+      # BSD head rejects it; an empty original is a prefix of anything.)
+      if [ "$size" -eq 0 ] || head -c "$size" .gitignore | cmp -s - "$snap/gitignore"; then
+        appended=1
+      fi
+    fi
     if [ ! -f .gitignore ]; then
-      cp -p "$snap/gitignore" .gitignore
-      cleanup_log "Restored the repository's own .gitignore (it was gone)."
+      if cp -p "$snap/gitignore" .gitignore; then
+        cleanup_log "Restored the repository's own .gitignore (it was gone)."
+      else
+        cleanup_log "Warning: could not restore .gitignore; its copy stays in ${snap} for the next try."
+        failed=1
+      fi
     elif cmp -s "$snap/gitignore" .gitignore; then
       :
-    elif head -c "$size" .gitignore | cmp -s - "$snap/gitignore"; then
-      cp -p "$snap/gitignore" .gitignore
-      cleanup_log "Reverted .gitignore: removed the lines via init appended."
+    elif [ "$appended" -eq 1 ]; then
+      if cp -p "$snap/gitignore" .gitignore; then
+        cleanup_log "Reverted .gitignore: removed the lines via init appended."
+      else
+        cleanup_log "Warning: could not revert .gitignore; its copy stays in ${snap} for the next try."
+        failed=1
+      fi
     else
       cleanup_log "Left .gitignore as it is: it changed beyond the lines via init appends (edited during the session?)."
     fi
@@ -135,25 +198,34 @@ restore_checkout() {
     fi
   fi
 
-  # Directories: only ones that did not exist before, inside the checkout.
+  # Directories: only ones that did not exist before, inside the checkout,
+  # and only when everything that ran from them was stopped.
   while IFS= read -r d; do
     [ -n "$d" ] || continue
     rel="${d#"$root"/}"
-    if grep -qxF -- "$d" "$snap/had-dirs" 2>/dev/null; then
+    if grep -qxF -- "$d" "$snap/had-dirs"; then
       cleanup_log "Left ${rel}/ in place: it was there before the session."
       continue
     fi
-    [ -e "$d" ] || continue
-    case "$d" in
+    [ -e "$d" ] || [ -L "$d" ] || continue
+    real=$(physical_path "$d")
+    case "$real" in
       "$root"/?*) ;;
       *) cleanup_log "Left ${d}: it is outside the checkout."; continue ;;
     esac
-    if rm -rf -- "$d"; then
+    rel="${real#"$root"/}"
+    if [ -f "$state/stop-failed" ]; then
+      cleanup_log "Left ${rel}/: $(cat "$state/stop-failed") failed, so a process may still run from it."
+      continue
+    fi
+    if rm -rf -- "$real"; then
       cleanup_log "Removed ${rel}/ (the CLI's runtime state, created by this session)."
     else
       cleanup_log "Warning: could not remove ${rel}/ completely."
     fi
   done < "$snap/dirs"
+
+  return "$failed"
 }
 
 cleanup_session() {
@@ -210,11 +282,11 @@ cleanup_session() {
     case "$(cat "$state/interface")" in
       codeserver)
         if via codeserver stop >/dev/null 2>&1; then cleanup_log "Stopped VS Code (via codeserver stop)."
-        else cleanup_log "via codeserver stop failed."; fi
+        else cleanup_log "via codeserver stop failed."; echo "via codeserver stop" > "$state/stop-failed"; fi
         ;;
       *)
         if via ttyd stop >/dev/null 2>&1; then cleanup_log "Stopped the web terminal (via ttyd stop)."
-        else cleanup_log "via ttyd stop failed."; fi
+        else cleanup_log "via ttyd stop failed."; echo "via ttyd stop" > "$state/stop-failed"; fi
         ;;
     esac
     rm -f "$state/interface"
@@ -234,6 +306,7 @@ cleanup_session() {
       cleanup_log "Stopped Caddy (started by this action)."
     else
       cleanup_log "via caddy stop failed."
+      echo "via caddy stop" > "$state/stop-failed"
     fi
     rm -f "$state/caddy-started" "$state/caddy-before"
   fi
@@ -256,11 +329,16 @@ cleanup_session() {
 
   # 5. What via init added next to .env: its backups of .env (with the
   #    login), its .gitignore lines, workspace/ and .asd/.
+  #    The marker goes before the note it points to: a cleanup killed in
+  #    between leaves no marker, never a marker without its note.
   if [ -f "$state/checkout-noted" ]; then
     did=1
-    restore_checkout "$state"
-    rm -rf "$state/checkout"
-    rm -f "$state/checkout-noted"
+    if restore_checkout "$state"; then
+      rm -f "$state/checkout-noted"
+      rm -rf "$state/checkout"
+    else
+      cleanup_log "Kept the note of the repository's own files in ${state}: the next cleanup tries again."
+    fi
   fi
 
   # 6. The deployment button.

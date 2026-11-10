@@ -133,6 +133,9 @@ runs:
       shell: bash
       run: bash "${SCRIPTS_DIR}/start-interface.sh"
       env:
+        # The CLI's config directory (relay registry) is the session's own, for
+        # the action's steps only (install-cli.sh).
+        XDG_CONFIG_HOME: ${{ steps.credentials.outputs.state_dir }}/cli/config
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
         STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
         SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
@@ -159,6 +162,9 @@ runs:
       shell: bash
       run: bash "${SCRIPTS_DIR}/connect.sh"
       env:
+        # The CLI's config directory (relay registry) is the session's own, for
+        # the action's steps only (install-cli.sh).
+        XDG_CONFIG_HOME: ${{ steps.credentials.outputs.state_dir }}/cli/config
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
         STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
         SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
@@ -194,6 +200,9 @@ runs:
       shell: bash
       run: exec bash "${SCRIPTS_DIR}/keepalive.sh"
       env:
+        # The CLI's config directory (relay registry) is the session's own, for
+        # the action's steps only (install-cli.sh).
+        XDG_CONFIG_HOME: ${{ steps.credentials.outputs.state_dir }}/cli/config
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
         STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
         SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
@@ -218,6 +227,9 @@ runs:
       shell: bash
       run: bash "${SCRIPTS_DIR}/cleanup.sh"
       env:
+        # The CLI's config directory (relay registry) is the session's own, for
+        # the action's steps only (install-cli.sh).
+        XDG_CONFIG_HOME: ${{ steps.credentials.outputs.state_dir }}/cli/config
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
         STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
         SESSION_NAME: ${{ steps.credentials.outputs.session_name }}

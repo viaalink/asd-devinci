@@ -130,9 +130,9 @@ On the way out, and also when a step of the action fails, the action:
 - takes the lines `via init` appended to `.gitignore` back out, and removes the `workspace/` and `.asd/` directories the session created (ones the repository already had are left alone);
 - marks the deployment inactive.
 
-The log has one `[cleanup]` line for each of these, or says why there was nothing to do. A final `if: always()` step repeats this for anything a cancelled step could not finish. Anything else you made in the checkout from the terminal stays.
+The log has one `[cleanup]` line for each of these, or says why there was nothing to do. A final `if: always()` step repeats this for anything a cancelled step could not finish. If stopping the terminal, VS Code or Caddy failed, `workspace/` is left (a process may still run from it) and the log says so. Anything else you made in the checkout from the terminal stays.
 
-The CLI itself is installed for the job only, in the runner's temporary directory (`RUNNER_TEMP`) and on the job's `PATH`; a `via` the runner already has (`~/.local/bin/via`) is not replaced.
+The CLI itself is installed for the job only, in the runner's temporary directory (`RUNNER_TEMP`); a `via` the runner already has (`~/.local/bin/via` and `~/.local/share/via`, on Windows `%LOCALAPPDATA%\via`) is not replaced, and no shell profile or user `PATH` is changed. `PATH`, `ASD_HOME` and `VIA_HOME` point at that install for the rest of the job, so a later step of yours that runs `via` gets the same CLI. The action's own steps also set `XDG_CONFIG_HOME` to the session's own directory, so the CLI's config directory (relay registry) is not the runner's; the terminal inherits that, so a tool that keeps its settings under `XDG_CONFIG_HOME` (such as the GitHub CLI) starts without the runner's. Your later steps keep the runner's `XDG_CONFIG_HOME`, and a `via` you run there uses the runner's config directory.
 
 ## Your own runners
 
@@ -140,7 +140,7 @@ The session works the same on self-hosted runners: choose `self-hosted` as the o
 
 - The runner needs outbound SSH to the relay port (2222 unless `VIA_TUNNEL_PORT` says otherwise), HTTPS to GitHub (the CLI installer), and `bash`, `curl` and `jq`; on Windows also PowerShell and Git Bash.
 - Linux, macOS and Windows runners are supported (x64; arm64 on Linux and macOS).
-- A self-hosted runner keeps its disk between jobs. The action leaves the checkout as it found it (see above) and installs the CLI for the job only, so other jobs on the runner keep the `via` they had. What you do in the terminal itself (files outside the checkout, programs you install, processes you leave running) stays: prefer ephemeral runners, or a runner dedicated to these sessions.
+- A self-hosted runner keeps its disk between jobs. The action takes back what it and `via init` put in the checkout (see above) and installs the CLI for the job only, so other jobs on the runner keep the `via` they had. What you do in the terminal itself (files you make, programs you install, processes you leave running) stays: prefer ephemeral runners, or a runner dedicated to these sessions.
 
 ## Security notes
 

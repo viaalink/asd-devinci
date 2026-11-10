@@ -15,7 +15,11 @@ source "${SCRIPTS_DIR}/lib/ci.sh"
 # CLI (~/.local/bin/via and ~/.local/share/via) is never replaced, so other
 # jobs on that runner keep the CLI they had. The job's PATH and ASD_HOME
 # (and VIA_HOME, which the installer and the CLI prefer when it is set) point
-# at this install for the rest of the job only.
+# at this install for the rest of the job, the caller's later steps included.
+# The CLI's config directory (relay registry; the CLI moves ~/.config/asd to
+# ~/.config/via on start) follows XDG_CONFIG_HOME: the action's own steps set
+# it to CLI_DIR/config (action.yml), not the job, so the caller's later steps
+# keep their own ~/.config (gh, git).
 
 REQUESTED_VERSION="${REQUESTED_VERSION:-latest}"
 VERSION=""
@@ -41,7 +45,7 @@ fi
 CLI_DIR="${STATE_DIR}/cli"
 CLI_BIN="${CLI_DIR}/bin"
 CLI_HOME="${CLI_DIR}/home"
-mkdir -p "$CLI_BIN" "$CLI_HOME"
+mkdir -p "$CLI_BIN" "$CLI_HOME" "${CLI_DIR}/config"
 
 # Separate bin and home: the installer moves the binary into <home>/bin and
 # links it from INSTALL_DIR. ASD_NO_MODIFY_PATH: no shell profile edits.
@@ -57,4 +61,4 @@ fi
 ci_add_path "$CLI_BIN"
 ci_set_env ASD_HOME "$CLI_HOME"
 ci_set_env VIA_HOME "$CLI_HOME"
-echo "Installed for this job only: $("$CLI_BIN/via" --version 2>/dev/null | tail -1) in ${CLI_DIR}"
+echo "Installed for this job only: $(XDG_CONFIG_HOME="${CLI_DIR}/config" ASD_HOME="$CLI_HOME" VIA_HOME="$CLI_HOME" "$CLI_BIN/via" --version 2>/dev/null | tail -1) in ${CLI_DIR}"

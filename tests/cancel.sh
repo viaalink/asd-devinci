@@ -36,7 +36,7 @@ case "$1 ${2:-}" in
     printf '\n# .env hygiene (added by .asd)\n.env\n.env.*\n!.env.example\n' >> .gitignore
     mkdir -p "${ASD_WORKSPACE_DIR:-workspace}/caddy" .asd/workspace ;;
   "ttyd start")      touch "$FAKE/ttyd" "$FAKE/caddy" ;;
-  "ttyd stop")       rm -f "$FAKE/ttyd" ;;
+  "ttyd stop")       [ ! -f "$FAKE/fail-ttyd-stop" ] || exit 1; rm -f "$FAKE/ttyd" ;;
   "codeserver stop") : ;;
   "caddy stop")      rm -f "$FAKE/caddy" ;;
   "expose stop")     rm -f "$FAKE/exposed" ;;
@@ -214,6 +214,81 @@ FINAL4C="$(cd "$T4C/repo" && PATH="$T4C/bin:$PATH" bash "$SCRIPTS/cleanup.sh" 2>
 check ".gitignore keeps the session's edit" test "$(cat "$T4C/repo/.gitignore")" = "changed in the session"
 check "and the log says why" grep -q "Left .gitignore as it is" <<<"$FINAL4C"
 
+echo "# 4d. A repository without .gitignore: the one via init created is removed"
+T4D="$(mktemp -d)"
+make_stubs "$T4D"
+mkdir -p "$T4D/repo"
+git -C "$T4D/repo" init -q
+git -C "$T4D/repo" -c user.name=t -c user.email=t@t commit -qm init --allow-empty
+start_session "$T4D"
+FINAL4D="$(cd "$T4D/repo" && PATH="$T4D/bin:$PATH" bash "$SCRIPTS/cleanup.sh" 2>&1)"
+check "no .gitignore left" test ! -e "$T4D/repo/.gitignore"
+check "and logged" grep -q "Removed the .gitignore via init created" <<<"$FINAL4D"
+
+echo "# 4e. The repository's symlinks named .env.bak* (a dangling one too) are kept"
+T4E="$(mktemp -d)"
+make_stubs "$T4E"
+mkdir -p "$T4E/repo"
+ln -s /nonexistent/target "$T4E/repo/.env.bak.link"
+printf 'TARGET=1\n' > "$T4E/repo/target"
+start_session "$T4E"
+(cd "$T4E/repo" && PATH="$T4E/bin:$PATH" bash "$SCRIPTS/cleanup.sh" >/dev/null 2>&1)
+check "dangling .env.bak.link kept" test "$(readlink "$T4E/repo/.env.bak.link")" = "/nonexistent/target"
+T4F="$(mktemp -d)"
+make_stubs "$T4F"
+mkdir -p "$T4F/repo"
+printf 'TARGET=1\n' > "$T4F/repo/target"
+ln -s target "$T4F/repo/.env.bak"
+start_session "$T4F"
+rm -f "$T4F/repo/.env.bak"; printf 'SESSION\n' > "$T4F/repo/.env.bak"   # replaced by a plain file
+FINAL4F="$(cd "$T4F/repo" && PATH="$T4F/bin:$PATH" bash "$SCRIPTS/cleanup.sh" 2>&1)"
+check "symlinked .env.bak is a symlink again" test "$(readlink "$T4F/repo/.env.bak")" = "target"
+check "and logged as restored" grep -q "Restored the repository's own .env.bak" <<<"$FINAL4F"
+
+echo "# 4f. An incomplete note never deletes the repository's own backups"
+T4G="$(mktemp -d)"
+make_stubs "$T4G"
+mkdir -p "$T4G/repo"
+printf 'REPO_OWN=1\n' > "$T4G/repo/.env.bak"
+start_session "$T4G"
+rm -rf "$T4G/state/checkout"     # a cleanup killed half way, the old order
+printf 'REPO_OWN=1\n' > "$T4G/repo/.env.bak"
+FINAL4G="$(cd "$T4G/repo" && PATH="$T4G/bin:$PATH" bash "$SCRIPTS/cleanup.sh" 2>&1)"
+check "the repository's .env.bak is still there" test "$(cat "$T4G/repo/.env.bak")" = "REPO_OWN=1"
+check "and the log says why nothing was removed" grep -q "the note of what the repository had is incomplete" <<<"$FINAL4G"
+T4H="$(mktemp -d)"
+make_stubs "$T4H"
+start_session "$T4H"
+: > "$T4H/state/checkout/root"
+FINAL4H="$(cd "$T4H/repo" && PATH="$T4H/bin:$PATH" bash "$SCRIPTS/cleanup.sh" 2>&1)"
+check "an empty checkout path removes nothing" test -d "$T4H/repo/workspace"
+check "and says so" grep -q "no usable checkout path" <<<"$FINAL4H"
+
+echo "# 4g. A failed restore keeps the note for the next try"
+T4I="$(mktemp -d)"
+make_stubs "$T4I"
+mkdir -p "$T4I/repo"
+printf 'REPO_OWN=1\n' > "$T4I/repo/.env.bak"
+start_session "$T4I"
+rm -f "$T4I/repo/.env.bak"; mkdir -p "$T4I/repo/.env.bak/x"   # cannot be put back over
+FINAL4I="$(cd "$T4I/repo" && PATH="$T4I/bin:$PATH" bash "$SCRIPTS/cleanup.sh" 2>&1)"
+check "the failure is logged" grep -q "could not restore the repository's own .env.bak" <<<"$FINAL4I"
+check "the note and its copy are kept" test -f "$T4I/state/checkout-noted" -a -f "$T4I/state/checkout/files/.env.bak"
+rm -rf "$T4I/repo/.env.bak"
+(cd "$T4I/repo" && PATH="$T4I/bin:$PATH" bash "$SCRIPTS/cleanup.sh" >/dev/null 2>&1)
+check "the next cleanup restores it" test "$(cat "$T4I/repo/.env.bak")" = "REPO_OWN=1"
+check "and drops the note" test ! -e "$T4I/state/checkout-noted"
+
+echo "# 4h. workspace/ stays when stopping the interface failed"
+T4J="$(mktemp -d)"
+make_stubs "$T4J"
+start_session "$T4J"
+touch "$T4J/fake/fail-ttyd-stop"
+FINAL4J="$(cd "$T4J/repo" && PATH="$T4J/bin:$PATH" bash "$SCRIPTS/cleanup.sh" 2>&1)"
+check "workspace/ left" test -d "$T4J/repo/workspace"
+check "and the log says why" grep -q "Left workspace/: via ttyd stop failed" <<<"$FINAL4J"
+check "the .env backups still go" test ! -e "$T4J/repo/.env.bak"
+
 echo "# 6. The CLI is installed for this job only, never over the runner's own"
 T6="$(mktemp -d)"
 mkdir -p "$T6/home/.local/bin" "$T6/bin" "$T6/state"
@@ -244,13 +319,15 @@ check "no shell profile edited" test ! -e "$T6/home/.bashrc"
 check "the job's via is in the state directory" test "$("$T6/state/cli/bin/via")" = "job-cli"
 check "the job's PATH gets that directory" grep -qxF "$T6/state/cli/bin" "$T6/path"
 check "the job's ASD_HOME points at it" grep -qxF "ASD_HOME=$T6/state/cli/home" "$T6/env"
+check "the job's VIA_HOME points at it" grep -qxF "VIA_HOME=$T6/state/cli/home" "$T6/env"
+check "XDG_CONFIG_HOME is not set for the job" bash -c "! grep -q '^XDG_CONFIG_HOME=' '$T6/env'"
 check "and says so" grep -q "Installed for this job only" <<<"$INSTALL6"
 
 echo "# 5. Nothing started: the final step says so"
 FINAL5="$(STATE_DIR="" bash "$SCRIPTS/cleanup.sh" 2>&1)"
 check "explains why there is nothing to do" grep -q "Nothing to do: no session state" <<<"$FINAL5"
 
-rm -rf "$T1" "$T1B" "$T2" "$T3" "$T4" "$T4B" "$T4C" "$T6"
+rm -rf "$T1" "$T1B" "$T2" "$T3" "$T4" "$T4B" "$T4C" "$T4D" "$T4E" "$T4F" "$T4G" "$T4H" "$T4I" "$T4J" "$T6"
 if [ "$FAILS" -gt 0 ]; then
   echo "$FAILS check(s) failed"
   exit 1

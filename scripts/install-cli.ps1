@@ -6,7 +6,9 @@
 # directory in this session's state directory under RUNNER_TEMP, never the
 # runner's %LOCALAPPDATA%\via, and no change to the user's PATH in the
 # registry. The job's PATH and ASD_HOME/VIA_HOME point at it for the rest of
-# the job only.
+# the job, the caller's later steps included. The CLI's config directory
+# (%APPDATA%\via otherwise) follows XDG_CONFIG_HOME, which the action's own
+# steps set to <state>\cli\config (action.yml).
 $ErrorActionPreference = "Stop"
 $env:VERSION = if ($env:REQUESTED_VERSION -eq "latest" -or -not $env:REQUESTED_VERSION) { "" } else { $env:REQUESTED_VERSION }
 # A nightly is a prerelease on viaalink/cli-nightly, which the installer does
@@ -25,9 +27,14 @@ if (-not $env:STATE_DIR) {
   Write-Output "::error::No session state directory: the credentials step did not run."
   exit 1
 }
-$cliHome = Join-Path $env:STATE_DIR "cli\home"
+# STATE_DIR comes from Git Bash as RUNNER_TEMP + "/ci-terminal-<name>"
+# (D:\a\_temp/ci-terminal-x): one form with backslashes for PATH and the env.
+$stateDir = [IO.Path]::GetFullPath($env:STATE_DIR)
+$cliHome = [IO.Path]::GetFullPath((Join-Path $stateDir "cli\home"))
 $cliBin = Join-Path $cliHome "bin"
+$cliConfig = [IO.Path]::GetFullPath((Join-Path $stateDir "cli\config"))
 New-Item -ItemType Directory -Path $cliBin -Force | Out-Null
+New-Item -ItemType Directory -Path $cliConfig -Force | Out-Null
 $env:ASD_HOME = $cliHome
 $env:VIA_HOME = $cliHome
 $env:INSTALL_DIR = $cliBin
