@@ -2,11 +2,11 @@
 
 A browser terminal (ttyd) or VS Code (code-server) on your CI runner, published through your own Viaalink Relay, behind a login. Start it from your laptop, open the link, and you are working inside the runner: the checked-out repository, the toolchain and the environment your pipeline sees. Useful to debug a job that only fails in CI, or to work on a machine you do not have locally. Nothing is opened on the runner itself: it connects out to your relay over SSH, and the relay serves the session under its own domain.
 
-> **The CLI command.** `uses: viaalink/ci-terminal@v2` works today. The `via ci install` command that writes this workflow for you comes with the next Viaalink CLI release; until then the command is `via devinci install`, which installs a self-contained workflow that `via gh terminal` starts the same way.
+> **The CLI command.** `uses: viaalink/ci-terminal@v2` works today: use it in a workflow of your own (see "In your own workflow" below). The `via ci install` command that writes it for you comes with the next Viaalink CLI release.
 
 ## Quick start
 
-You need the [Viaalink CLI](https://github.com/viaalink/cli) (`via`; `asd` still works as an alias) and a relay you are enrolled on.
+You need the [Viaalink CLI](https://github.com/viaalink/cli) (`via`) and a relay you are enrolled on.
 
 ```bash
 # In your repository: installs .github/workflows/terminal.yml
@@ -182,10 +182,6 @@ The session works the same on self-hosted runners: choose `self-hosted` as the o
 **`via expose` fails**: check that the runner can reach the relay's SSH port, that the device is still enrolled on the relay, that `VIA_TUNNEL_HOST` is the relay's host, and that `VIA_TUNNEL_HOST_KEY_FINGERPRINTS` matches the relay's host key.
 
 **The URL does not answer yet**: the interface can take a few seconds after the URL appears. The run log shows what was published.
-
-## Also available
-
-- **GitLab CI/CD component**: [accelerated-software-development/devinci](https://gitlab.com/explore/catalog/accelerated-software-development/devinci)
 
 ## Links
 
