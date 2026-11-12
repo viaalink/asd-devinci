@@ -113,8 +113,8 @@ runs:
         # The CLI goes into this session's state directory (RUNNER_TEMP), on
         # the job's PATH only: a self-hosted runner's own via stays as it is.
         STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
-        # `via --version` (ours and the installer's) already moves ~/.config/asd
-        # to via: the config directory is the session's own here too.
+        # `via --version` (ours and the installer's) already opens the CLI's
+        # config directory: it is the session's own here too.
         XDG_CONFIG_HOME: ${{ steps.credentials.outputs.state_dir }}/cli/config
         REQUESTED_VERSION: ${{ steps.credentials.outputs.cli_version }}
         # The installer looks the release up on the GitHub API; the job's
@@ -128,8 +128,8 @@ runs:
       env:
         SCRIPTS_DIR: ${{ github.action_path }}/scripts
         STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
-        # `via --version` (ours and the installer's) already moves ~/.config/asd
-        # to via: the config directory is the session's own here too.
+        # `via --version` (ours and the installer's) already opens the CLI's
+        # config directory: it is the session's own here too.
         XDG_CONFIG_HOME: ${{ steps.credentials.outputs.state_dir }}/cli/config
         REQUESTED_VERSION: ${{ steps.credentials.outputs.cli_version }}
         GITHUB_TOKEN: ${{ github.token }}
@@ -151,15 +151,15 @@ runs:
         SESSION_SHELL: ${{ inputs.shell }}
         # The login as real step env too, so the CLI never depends on
         # reading it back from .env (its .env autoload).
-        ASD_BASIC_AUTH_USERNAME: ${{ inputs.username }}
-        ASD_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
-        ASD_TTYD_USERNAME: ${{ inputs.username }}
-        ASD_TTYD_PASSWORD: ${{ inputs.password }}
-        ASD_TTYD_SHELL_CMD: ${{ inputs.shell }}
-        ASD_CODESERVER_AUTH: password
-        ASD_CODESERVER_PASSWORD: ${{ inputs.password }}
-        ASD_NON_INTERACTIVE: '1'
-        ASD_WORKSPACE_DIR: ${{ github.workspace }}/workspace
+        VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
+        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
+        VIA_TTYD_USERNAME: ${{ inputs.username }}
+        VIA_TTYD_PASSWORD: ${{ inputs.password }}
+        VIA_TTYD_SHELL_CMD: ${{ inputs.shell }}
+        VIA_CODESERVER_AUTH: password
+        VIA_CODESERVER_PASSWORD: ${{ inputs.password }}
+        VIA_NON_INTERACTIVE: '1'
+        VIA_WORKSPACE_DIR: ${{ github.workspace }}/workspace
 
     # Publishes the session and returns; the tunnel keeps running for the
     # rest of the job. The URL is read back from the CLI, never assembled.
@@ -177,17 +177,17 @@ runs:
         SESSION_INTERFACE: ${{ steps.credentials.outputs.interface }}
         SESSION_TIMEOUT_MINUTES: ${{ steps.credentials.outputs.timeout_minutes }}
         SESSION_TARGET: ${{ steps.interface.outputs.target }}
-        # Runner env under the names every CLI release reads; the secrets
-        # are VIA_* (the CLI copies VIA_X onto ASD_X from 3.2 on).
-        ASD_TUNNEL_KEY: ${{ inputs.tunnel-key }}
-        ASD_TUNNEL_KEY_ID: ${{ inputs.tunnel-key-id }}
-        ASD_TUNNEL_HOST: ${{ inputs.tunnel-host }}
-        ASD_TUNNEL_PORT: ${{ inputs.tunnel-port }}
-        ASD_TUNNEL_HOST_KEY_FINGERPRINTS: ${{ inputs.tunnel-host-key-fingerprints }}
-        ASD_BASIC_AUTH_USERNAME: ${{ inputs.username }}
-        ASD_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
-        ASD_NON_INTERACTIVE: '1'
-        ASD_WORKSPACE_DIR: ${{ github.workspace }}/workspace
+        # The relay key, host key pins and login as VIA_* step env (the CLI
+        # reads the VIA_* names from 3.2.0 on; credentials.sh refuses older).
+        VIA_TUNNEL_KEY: ${{ inputs.tunnel-key }}
+        VIA_TUNNEL_KEY_ID: ${{ inputs.tunnel-key-id }}
+        VIA_TUNNEL_HOST: ${{ inputs.tunnel-host }}
+        VIA_TUNNEL_PORT: ${{ inputs.tunnel-port }}
+        VIA_TUNNEL_HOST_KEY_FINGERPRINTS: ${{ inputs.tunnel-host-key-fingerprints }}
+        VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
+        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
+        VIA_NON_INTERACTIVE: '1'
+        VIA_WORKSPACE_DIR: ${{ github.workspace }}/workspace
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_SHA: ${{ github.sha }}
@@ -216,18 +216,18 @@ runs:
         DEPLOY_ID: ${{ steps.connect.outputs.deploy_id }}
         # The login as real env, as in the steps before: via expose stop
         # must not depend on the compiled binary's .env load.
-        ASD_BASIC_AUTH_USERNAME: ${{ inputs.username }}
-        ASD_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
-        ASD_NON_INTERACTIVE: '1'
-        ASD_WORKSPACE_DIR: ${{ github.workspace }}/workspace
+        VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
+        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
+        VIA_NON_INTERACTIVE: '1'
+        VIA_WORKSPACE_DIR: ${{ github.workspace }}/workspace
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
 
     # Runs whatever the steps above could not: stop the exposure, the
     # interface and the Caddy this action started, restore (or remove) .env,
     # take back what via init added to the checkout (.env backups, .gitignore
-    # lines, workspace/, .asd/), mark the deployment inactive. Logs each thing it does, or why there
-    # was nothing left to do.
+    # lines, workspace/, the CLI's runtime state folder), mark the deployment
+    # inactive. Logs each thing it does, or why there was nothing left to do.
     - name: End the session
       if: always()
       shell: bash
@@ -240,9 +240,9 @@ runs:
         STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
         SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
         DEPLOY_ID: ${{ steps.connect.outputs.deploy_id }}
-        ASD_BASIC_AUTH_USERNAME: ${{ inputs.username }}
-        ASD_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
-        ASD_NON_INTERACTIVE: '1'
-        ASD_WORKSPACE_DIR: ${{ github.workspace }}/workspace
+        VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
+        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
+        VIA_NON_INTERACTIVE: '1'
+        VIA_WORKSPACE_DIR: ${{ github.workspace }}/workspace
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}

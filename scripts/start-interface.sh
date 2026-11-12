@@ -20,8 +20,8 @@ trap on_exit EXIT
 
 # Port of the CLI terminal workflow's "Start the interface" step. Username,
 # password and shell were checked by credentials.sh (no line breaks). The
-# login also reaches this step as step env (ASD_BASIC_AUTH_*, ASD_TTYD_*, ASD_CODESERVER_*), so the
-# CLI does not depend on reading it back from .env.
+# login also reaches this step as step env (VIA_BASIC_AUTH_*, VIA_TTYD_*,
+# VIA_CODESERVER_*), so the CLI does not depend on reading it back from .env.
 
 ci_group_start "Starting the session interface (${SESSION_INTERFACE})"
 
@@ -38,12 +38,16 @@ envq() {
 
 # Seed .env first: via init keeps values that are already there. Appended, so
 # a .env the repository already has is kept. The session login is the
-# project login (ASD_BASIC_AUTH_*): Caddy's login in front of the terminal and
-# of the published route is that one, and without it `via init` generates a
-# hub login the laptop does not know (every request answered 401).
+# project login: Caddy's login in front of the terminal and of the published
+# route is that one, and without it `via init` generates a hub login the
+# laptop does not know (every request answered 401). The keys are the ones
+# the CLI itself writes into .env and looks for when it fills in what is
+# missing: a .env key is not an environment variable, so the VIA_ names do
+# not apply to it.
 # Keep the repository's own .env to restore at the end (cleanup.sh).
 # What via init writes besides .env (its .env backups, .gitignore lines,
-# workspace/, .asd/) is noted first, so the cleanup takes back only that.
+# workspace/, its runtime state folder) is noted first, so the cleanup takes
+# back only that.
 note_checkout_before
 if [ -f .env ]; then
   cp -p .env "${STATE_DIR}/env.backup"
@@ -84,7 +88,7 @@ if [ "$SESSION_INTERFACE" != "codeserver" ] && [ "$CI_RUNNER_OS" != "Windows" ];
 else
   PORT=$(grep -E "^${PORT_VAR}=" .env | tail -1 | cut -d= -f2-)
   if [ -z "$PORT" ]; then
-    ci_error "${PORT_VAR} is not in .env after the interface started."
+    ci_error "The interface's port is not in .env after it started."
     exit 1
   fi
   TARGET="$PORT"

@@ -13,14 +13,13 @@ source "${SCRIPTS_DIR}/lib/ci.sh"
 # data directory (helpers, modules, its project list) to CLI_DIR/home, both in
 # this session's state directory under RUNNER_TEMP. A self-hosted runner's own
 # CLI (~/.local/bin/via and ~/.local/share/via) is never replaced, so other
-# jobs on that runner keep the CLI they had. The job's PATH and ASD_HOME
-# (and VIA_HOME, which the installer and the CLI prefer when it is set) point
-# at this install for the rest of the job, the caller's later steps included.
-# The CLI's config directory (relay registry; the CLI moves ~/.config/asd to
-# ~/.config/via on every start, the installer's `via --version` included)
-# follows XDG_CONFIG_HOME: every step of the action, this one too, sets it to
-# CLI_DIR/config (action.yml), not the job, so the caller's later steps keep
-# their own ~/.config (gh, git).
+# jobs on that runner keep the CLI they had. The job's PATH and VIA_HOME
+# point at this install for the rest of the job, the caller's later steps
+# included. The CLI's config directory (relay registry; opened on every
+# start, the installer's `via --version` included) follows XDG_CONFIG_HOME:
+# every step of the action, this one too, sets it to CLI_DIR/config
+# (action.yml), not the job, so the caller's later steps keep their own
+# ~/.config (gh, git).
 
 REQUESTED_VERSION="${REQUESTED_VERSION:-latest}"
 VERSION=""
@@ -49,17 +48,17 @@ CLI_HOME="${CLI_DIR}/home"
 mkdir -p "$CLI_BIN" "$CLI_HOME" "${CLI_DIR}/config"
 
 # Separate bin and home: the installer moves the binary into <home>/bin and
-# links it from INSTALL_DIR. ASD_NO_MODIFY_PATH: no shell profile edits.
+# links it from INSTALL_DIR. VIA_NO_MODIFY_PATH: no shell profile edits. The
+# installer reads VIA_HOME, VIA_INSTALL_BASE_URL and VIA_NO_MODIFY_PATH first
+# thing, before it uses any of them.
 curl -fsSL https://raw.githubusercontent.com/viaalink/cli/main/install.sh \
   | VERSION="$VERSION" VIA_INSTALL_BASE_URL="$VIA_INSTALL_BASE_URL" \
-    INSTALL_DIR="$CLI_BIN" ASD_HOME="$CLI_HOME" VIA_HOME="$CLI_HOME" \
-    ASD_NO_MODIFY_PATH=1 VIA_NO_MODIFY_PATH=1 bash
+    INSTALL_DIR="$CLI_BIN" VIA_HOME="$CLI_HOME" VIA_NO_MODIFY_PATH=1 bash
 
 if [ ! -x "$CLI_BIN/via" ]; then
   ci_error "The installer finished but ${CLI_BIN}/via is not there."
   exit 1
 fi
 ci_add_path "$CLI_BIN"
-ci_set_env ASD_HOME "$CLI_HOME"
 ci_set_env VIA_HOME "$CLI_HOME"
-echo "Installed for this job only: $(ASD_HOME="$CLI_HOME" VIA_HOME="$CLI_HOME" "$CLI_BIN/via" --version 2>/dev/null | tail -1) in ${CLI_DIR}"
+echo "Installed for this job only: $(VIA_HOME="$CLI_HOME" "$CLI_BIN/via" --version 2>/dev/null | tail -1) in ${CLI_DIR}"

@@ -8,8 +8,8 @@ source "${SCRIPTS_DIR}/lib/ci.sh"
 source "${SCRIPTS_DIR}/cleanup.sh"
 
 # Port of the CLI terminal workflow's "Publish through the relay" step. The
-# relay key, host key pins and login arrive as step env (ASD_TUNNEL_*,
-# ASD_BASIC_AUTH_*); SESSION_NAME, SESSION_TARGET, STATE_DIR come from earlier
+# relay key, host key pins and login arrive as step env (VIA_TUNNEL_*,
+# VIA_BASIC_AUTH_*); SESSION_NAME, SESSION_TARGET, STATE_DIR come from earlier
 # steps' outputs. Returns once published; keepalive.sh holds the session.
 
 ci_group_start "Publishing through the relay"
@@ -43,8 +43,8 @@ echo "Tunnel URL: $URL"
 # it is written anywhere.
 URL_HOST="${URL#*://}"
 URL_HOST="${URL_HOST%%/*}"
-ENCODED_USER=$(printf '%s' "${ASD_BASIC_AUTH_USERNAME}" | jq -sRr @uri)
-ENCODED_PASS=$(printf '%s' "${ASD_BASIC_AUTH_PASSWORD}" | jq -sRr @uri)
+ENCODED_USER=$(printf '%s' "${VIA_BASIC_AUTH_USERNAME}" | jq -sRr @uri)
+ENCODED_PASS=$(printf '%s' "${VIA_BASIC_AUTH_PASSWORD}" | jq -sRr @uri)
 FULL_URL="https://${ENCODED_USER}:${ENCODED_PASS}@${URL_HOST}/"
 ci_mask "${ENCODED_PASS}"
 ci_mask "${FULL_URL}"
@@ -58,7 +58,7 @@ fi
 ci_set_summary "$(cat << EOF2
 ## Terminal session ready
 
-**[${URL}](${URL})** (sign in as \`${ASD_BASIC_AUTH_USERNAME}\`)
+**[${URL}](${URL})** (sign in as \`${VIA_BASIC_AUTH_USERNAME}\`)
 
 Open ${LIMIT}. Cancel the run to end it.
 EOF2

@@ -3,8 +3,11 @@
 # that the session really ends: exposure stopped, interface and the Caddy the
 # action started stopped, the repository's .env restored, no sleep left, and
 # a cleanup log line for each of those, and nothing via init left in the
-# checkout (.env backups, .gitignore lines, workspace/, .asd/). Then the same with a keep-alive that
-# is killed outright (SIGKILL): the final step must do everything itself.
+# checkout (.env backups, .gitignore lines, workspace/, the CLI's state
+# folder: .via/, or the older name for older CLIs). Then the same with a
+# keep-alive that is killed outright (SIGKILL): the final step must do
+# everything itself. The action passes only VIA_* names, and no log line or
+# comment of the action names the old brand.
 #
 # Run: bash tests/cancel.sh   (needs bash, jq; no network, no real CLI)
 set -euo pipefail
@@ -33,8 +36,11 @@ case "$1 ${2:-}" in
     # login in it), its .gitignore rules, its runtime state directories.
     cp .env .env.bak; cp .env .env.bak.1; chmod 600 .env.bak .env.bak.1
     echo "ADDED_BY_INIT=1" >> .env
-    printf '\n# .env hygiene (added by .asd)\n.env\n.env.*\n!.env.example\n' >> .gitignore
-    mkdir -p "${ASD_WORKSPACE_DIR:-workspace}/caddy" .asd/workspace ;;
+    # The CLI's state folder: .via for new CLIs, the older name for older
+    # ones (FAKE_STATE_DIR), with the matching .gitignore comment.
+    sd="${FAKE_STATE_DIR:-.via}"
+    printf '\n# .env hygiene (added by %s)\n.env\n.env.*\n!.env.example\n' "$sd" >> .gitignore
+    mkdir -p "${VIA_WORKSPACE_DIR:-workspace}/caddy" "$sd/workspace" ;;
   "ttyd start")      touch "$FAKE/ttyd" "$FAKE/caddy" ;;
   "ttyd stop")       [ ! -f "$FAKE/fail-ttyd-stop" ] || exit 1; rm -f "$FAKE/ttyd" ;;
   "codeserver stop") : ;;
@@ -76,9 +82,9 @@ start_session() {
     git -C "$t/repo" -c user.name=t -c user.email=t@t commit -qm init
   fi
   export FAKE="$t/fake" STATE_DIR="$t/state" SESSION_NAME=demo SESSION_INTERFACE=terminal \
-    ASD_WORKSPACE_DIR="$t/repo/workspace" \
+    VIA_WORKSPACE_DIR="$t/repo/workspace" \
     SESSION_TARGET=ttyd SESSION_USERNAME=via SESSION_PASSWORD='p a$s"w' SESSION_SHELL=bash \
-    ASD_BASIC_AUTH_USERNAME=via ASD_BASIC_AUTH_PASSWORD='p a$s"w' SESSION_TIMEOUT_MINUTES=0 \
+    VIA_BASIC_AUTH_USERNAME=via VIA_BASIC_AUTH_PASSWORD='p a$s"w' SESSION_TIMEOUT_MINUTES=0 \
     SCRIPTS_DIR="$SCRIPTS" PATH="$t/bin:$PATH" GITHUB_ACTIONS="" GITLAB_CI=""
   (cd "$t/repo" && bash "$SCRIPTS/start-interface.sh" >"$t/start.log" 2>&1)
   (cd "$t/repo" && bash "$SCRIPTS/connect.sh" >"$t/connect.log" 2>&1)
@@ -137,7 +143,8 @@ check "no .env backup left (they hold the login)" bash -c "! ls -A '$T1/repo' | 
 check ".env backups logged as removed" grep -q "Removed .env.bak.1 (a copy of the session's .env" "$T1/keepalive.log"
 check ".gitignore reverted and logged" grep -q "Reverted .gitignore" "$T1/keepalive.log"
 check "workspace/ removed and logged" grep -q "Removed workspace/" "$T1/keepalive.log"
-check ".asd/ removed and logged" grep -q "Removed .asd/" "$T1/keepalive.log"
+check ".via/ removed" test ! -e "$T1/repo/.via"
+check "and logged without naming the folder" grep -q "Removed the CLI's runtime state (created by this session)." "$T1/keepalive.log"
 check "checkout is clean (git status)" test -z "$(git -C "$T1/repo" status --porcelain)"
 check "no keep-alive sleep left" no_sleep_left
 check "final step says why there is nothing left" \
@@ -209,6 +216,7 @@ echo "# 4b. What the repository had before is kept: its .env backup, workspace/,
 T4B="$(mktemp -d)"
 make_stubs "$T4B"
 mkdir -p "$T4B/repo/workspace" "$T4B/repo/.asd"
+export FAKE_STATE_DIR=.asd   # an older CLI: it uses the folder the repository has
 printf 'OLD_BACKUP=1\n' > "$T4B/repo/.env.bak"
 printf 'keep\n' > "$T4B/repo/workspace/mine.txt"
 start_session "$T4B"
@@ -218,7 +226,10 @@ check "and logged as restored" grep -q "Restored the repository's own .env.bak" 
 check "the new .env.bak.1 is removed" test ! -e "$T4B/repo/.env.bak.1"
 check "workspace/ that was there is kept" test -f "$T4B/repo/workspace/mine.txt"
 check "and the log says why" grep -q "Left workspace/ in place: it was there before" <<<"$FINAL4B"
-check ".asd/ that was there is kept" test -d "$T4B/repo/.asd"
+check "the state folder that was there is kept" test -d "$T4B/repo/.asd"
+check "and the log says why, without naming it" grep -q "Left the CLI's runtime state in place: it was there before" <<<"$FINAL4B"
+
+unset FAKE_STATE_DIR
 
 echo "# 4c. A .gitignore edited beyond via init's lines is left alone"
 T4C="$(mktemp -d)"
@@ -321,11 +332,16 @@ mkdir -p "$T6/home/.local/bin" "$T6/bin" "$T6/state"
 printf '#!/bin/sh\necho runner-own\n' > "$T6/home/.local/bin/via"
 chmod +x "$T6/home/.local/bin/via"
 # curl stub serving an installer that, like the real one, falls back to
-# ~/.local/bin and ~/.local/share/via when INSTALL_DIR / ASD_HOME are unset.
+# ~/.local/bin and ~/.local/share/via when INSTALL_DIR / VIA_HOME are unset,
+# and reads the VIA_ names first thing.
 cat > "$T6/bin/curl" <<'STUB'
 #!/bin/bash
 cat <<'INSTALLER'
 set -eu
+for _v in HOME INSTALL_BASE_URL NO_MODIFY_PATH; do
+  _via="VIA_${_v}"
+  if [ -n "${!_via:-}" ]; then export "ASD_${_v}=${!_via}"; fi
+done
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 home="${ASD_HOME:-$HOME/.local/share/via}"
 mkdir -p "$INSTALL_DIR" "$home/bin"
@@ -344,16 +360,50 @@ check "nothing in the runner's ~/.local/share" test ! -e "$T6/home/.local/share"
 check "no shell profile edited" test ! -e "$T6/home/.bashrc"
 check "the job's via is in the state directory" test "$("$T6/state/cli/bin/via")" = "job-cli"
 check "the job's PATH gets that directory" grep -qxF "$T6/state/cli/bin" "$T6/path"
-check "the job's ASD_HOME points at it" grep -qxF "ASD_HOME=$T6/state/cli/home" "$T6/env"
+check "the job env gets no ASD_ name" bash -c "! grep -q '^ASD_' '$T6/env'"
 check "the job's VIA_HOME points at it" grep -qxF "VIA_HOME=$T6/state/cli/home" "$T6/env"
 check "XDG_CONFIG_HOME is not set for the job" bash -c "! grep -q '^XDG_CONFIG_HOME=' '$T6/env'"
 check "and says so" grep -q "Installed for this job only" <<<"$INSTALL6"
+
+echo "# 1d. An older CLI's state folder is removed the same way"
+T1D="$(mktemp -d)"
+make_stubs "$T1D"
+export FAKE_STATE_DIR=.asd
+start_session "$T1D"
+unset FAKE_STATE_DIR
+FINAL1D="$(cd "$T1D/repo" && PATH="$T1D/bin:$PATH" bash "$SCRIPTS/cleanup.sh" 2>&1)"
+check "the older state folder is removed" test ! -e "$T1D/repo/.asd"
+check "and logged without naming it" grep -q "Removed the CLI's runtime state (created by this session)." <<<"$FINAL1D"
+check "its .gitignore lines are taken out" test -z "$(git -C "$T1D/repo" status --porcelain)"
+check "no cleanup line names the old brand" bash -c "! grep -i 'asd' <<<\"\$1\"" _ "$FINAL1D"
+
+echo "# 7. cli-version: older than 3.2.0 is refused (it does not read VIA_*)"
+cred() {
+  INPUT_TUNNEL_KEY=k INPUT_TUNNEL_KEY_ID=i INPUT_TUNNEL_HOST=h INPUT_HOST_KEY_FINGERPRINTS=SHA256:x \
+    INPUT_PASSWORD=pw INPUT_USERNAME=via INPUT_CLI_VERSION="$1" GITHUB_SHA=abcdef1234 \
+    RUNNER_TEMP="$(mktemp -d)" GITHUB_ACTIONS="" GITLAB_CI="" SCRIPTS_DIR="$SCRIPTS" \
+    bash "$SCRIPTS/credentials.sh" >/dev/null 2>&1
+}
+refused() { ! cred "$1"; }
+check "v3.1.8 refused" refused v3.1.8
+check "2.9.0 refused" refused 2.9.0
+check "v3.2.0 accepted" cred v3.2.0
+check "a 3.2.6 nightly accepted" cred v3.2.6-nightly.20261109T1503
+check "v4.0.0 accepted" cred v4.0.0
+check "latest accepted" cred latest
+
+echo "# 8. The action's comments and log lines never name the old brand"
+# Allowed: the CLI's own .env keys and folder/marker names, as code.
+BRAND_HITS="$(grep -n -i 'asd' "$ROOT/action.yml" "$SCRIPTS"/*.sh "$SCRIPTS"/*.ps1 "$SCRIPTS"/lib/*.sh "$ROOT/README.md" \
+  | grep -v -E ':[0-9]+:\s*echo "ASD_[A-Z_]+=|:[0-9]+:\s*PORT_VAR=ASD_[A-Z_]+$|:[0-9]+:CLI_STATE_DIRS=|:[0-9]+:CLI_GITIGNORE_MARK=' || true)"
+check "no other mention (${BRAND_HITS:-none})" test -z "$BRAND_HITS"
+check "no ASD_ variable passed in action.yml" bash -c "! grep -q 'ASD_' '$ROOT/action.yml'"
 
 echo "# 5. Nothing started: the final step says so"
 FINAL5="$(STATE_DIR="" bash "$SCRIPTS/cleanup.sh" 2>&1)"
 check "explains why there is nothing to do" grep -q "Nothing to do: no session state" <<<"$FINAL5"
 
-rm -rf "$T1" "$T1B" "$T1C" "$T2" "$T3" "$T4" "$T4B" "$T4C" "$T4D" "$T4E" "$T4K" "$T4F" "$T4G" "$T4H" "$T4I" "$T4J" "$T6"
+rm -rf "$T1" "$T1B" "$T1C" "$T1D" "$T2" "$T3" "$T4" "$T4B" "$T4C" "$T4D" "$T4E" "$T4K" "$T4F" "$T4G" "$T4H" "$T4I" "$T4J" "$T6"
 if [ "$FAILS" -gt 0 ]; then
   echo "$FAILS check(s) failed"
   exit 1

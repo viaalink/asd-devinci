@@ -75,13 +75,13 @@ started, published or stopped goes here first, then the CLI wrapper follows.
    name (DNS label), interface (`terminal` | `codeserver`).
 2. Installs the Viaalink CLI with the official installer (`cli-version`:
    latest, release tag or nightly tag; nightlies via `VIA_INSTALL_BASE_URL`)
-   into `$STATE_DIR/cli` (`ASD_HOME`/`VIA_HOME` = `cli/home`; `INSTALL_DIR` =
+   into `$STATE_DIR/cli` (`VIA_HOME` = `cli/home`; `INSTALL_DIR` =
    `cli/bin` on Linux/macOS, `cli\home\bin` on Windows, the installers'
-   own layouts; no PATH/profile/registry edits), then `GITHUB_PATH` + `ASD_HOME`/`VIA_HOME` in
+   own layouts; no PATH/profile/registry edits), then `GITHUB_PATH` + `VIA_HOME` in
    `GITHUB_ENV` for the rest of the job. Never the runner's `~/.local/bin`:
    a self-hosted runner's other jobs keep their CLI. The action's own steps
    set `XDG_CONFIG_HOME=$STATE_DIR/cli/config` (step env, not the job): the
-   CLI's config dir (relay registry, ~/.config/asd -> via move) follows it.
+   CLI's config dir (relay registry) follows it.
 3. Seeds the login into `.env` (escaped), `via init --yes`, then
    `via ttyd start` or `via codeserver start`. The login is also step env.
 4. `via expose ttyd <name>` (socket, Linux/macOS) or `via expose <port> <name>`
@@ -93,7 +93,7 @@ started, published or stopped goes here first, then the CLI wrapper follows.
    `if: always()` step): stop the exposure, the interface and the Caddy the
    action started, restore the repository's `.env` from the backup (or remove
    it), take back what `via init` added to the checkout (`.env.bak*` copies
-   with the login, appended `.gitignore` lines, `workspace/`, `.asd/`; noted
+   with the login, appended `.gitignore` lines, `workspace/`, `.via/` (older CLIs: the older state folder); noted
    by `note_checkout_before` so what the repository had is kept), deployment
    inactive. One `[cleanup]` log line per part; each part's
    marker is removed when done, so a killed cleanup leaves the rest to the
@@ -101,12 +101,12 @@ started, published or stopped goes here first, then the CLI wrapper follows.
    holds the step's output open and the trap's log is lost.
    Session state (backup, markers, URL file) lives in `$RUNNER_TEMP/ci-terminal-<session>`;
    steps pass values as step outputs, never `$GITHUB_ENV` (the one exception:
-   the job-scoped CLI's `ASD_HOME`/`VIA_HOME`, next to its `GITHUB_PATH` entry).
+   the job-scoped CLI's `VIA_HOME`, next to its `GITHUB_PATH` entry).
 
 ## Key Design Decisions
 
 - **No default relay**, no provisioning API, no legacy modes (v2)
-- **Secrets are `VIA_*`**; the runner env uses the `ASD_*` names every CLI release reads (the CLI copies VIA_X onto ASD_X from 3.2 on). Do not add other aliases.
+- **Secrets and runner env are `VIA_*`**: the CLI reads every `VIA_*` name from 3.2.0 on (`modules/core/helpers/via-env.ts`, first thing at start), so `cli-version` below 3.2.0 is refused. The installer reads `VIA_HOME`, `VIA_INSTALL_BASE_URL` and `VIA_NO_MODIFY_PATH` itself. Exception: the login lines seeded into `.env` keep the CLI's own `.env` key names (a `.env` key is not an environment variable; `via init` fills in keys by those names). Logs and comments never name the old brand or its folders. Do not add other aliases.
 - **URL never assembled**: shared and dedicated relays shape hostnames differently
 - **Host key pinning is never skipped** (`tunnel-host-key-fingerprints` is required)
 - **Logs**: never echo an input value in an error; mask the password (raw and URL-encoded) before any CLI step; do not print the relay host or key id

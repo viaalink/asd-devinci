@@ -55,10 +55,28 @@ cleanup_log() {
   echo "[cleanup] $*"
 }
 
+# The folder the CLI keeps its project state in, in the checkout: newer CLIs
+# write .via, older ones the older name. The log never names the folder.
+CLI_STATE_DIRS=(.via .asd)
+# The comment the CLI puts above the .gitignore lines it appends.
+CLI_GITIGNORE_MARK='\(added by \.?(via|asd)\)'
+
+# How the log names a directory of the checkout: the CLI's state folder by
+# what it is, any other by its path.
+dir_label() {
+  local n
+  for n in "${CLI_STATE_DIRS[@]}"; do
+    if [ "$1" = "$n" ]; then echo "the CLI's runtime state"; return 0; fi
+  done
+  echo "${1}/"
+}
+
 # What `via init` writes into the checkout besides .env: a copy of .env before
 # each rewrite (.env.bak, .env.bak.1, ...: mode 0600, with the login in it),
 # lines appended to .gitignore, its runtime state in the workspace directory
-# (ASD_WORKSPACE_DIR, workspace/ in action.yml) and .asd/. Called in the
+# (VIA_WORKSPACE_DIR, workspace/ in action.yml) and the CLI's runtime state
+# folder in the checkout (CLI_STATE_DIRS: newer CLIs write the one, older
+# ones the other; both are noted, either is removed). Called in the
 # checkout before the action seeds .env: notes which of these the repository
 # already had, and keeps a copy of its backups and .gitignore, so the cleanup
 # removes or reverts only what the session added. `complete` is written last:
@@ -87,10 +105,10 @@ note_checkout_before() {
   fi
   : > "$snap/dirs"
   : > "$snap/had-dirs"
-  local ws="${ASD_WORKSPACE_DIR:-$PWD/workspace}"
+  local ws="${VIA_WORKSPACE_DIR:-$PWD/workspace}"
   # Windows: github.workspace is D:\a\..., Git Bash's PWD is /d/a/...
   if command -v cygpath >/dev/null 2>&1; then ws=$(cygpath -u "$ws"); fi
-  for d in "$ws" "$PWD/.asd"; do
+  for d in "$ws" "${CLI_STATE_DIRS[@]/#/$PWD/}"; do
     echo "$d" >> "$snap/dirs"
     if [ -e "$d" ] || [ -L "$d" ]; then echo "$d" >> "$snap/had-dirs"; fi
   done
@@ -119,20 +137,20 @@ restore_checkout() {
   local f
   for f in complete root had-files dirs had-dirs; do
     if [ ! -f "$snap/$f" ]; then
-      cleanup_log "Left the checkout's .env backups, .gitignore, workspace/ and .asd/ as they are: the note of what the repository had is incomplete (${f} missing), so nothing can be told apart."
+      cleanup_log "Left the checkout's .env backups, .gitignore, workspace/ and the CLI's runtime state as they are: the note of what the repository had is incomplete (${f} missing), so nothing can be told apart."
       return 0
     fi
   done
   root=$(cat "$snap/root")
   if [ -z "$root" ] || [ "$root" = / ] || [ ! -d "$root" ]; then
-    cleanup_log "Left the checkout's .env backups, .gitignore, workspace/ and .asd/ as they are: no usable checkout path in the note (${root:-empty})."
+    cleanup_log "Left the checkout's .env backups, .gitignore, workspace/ and the CLI's runtime state as they are: no usable checkout path in the note (${root:-empty})."
     return 0
   fi
   ( cd -- "$root" && restore_checkout_in_root "$state" "$snap" "$root" )
 }
 
 restore_checkout_in_root() {
-  local state="$1" snap="$2" root="$3" f d rel real failed=0
+  local state="$1" snap="$2" root="$3" f d rel real what failed=0
 
   # .env backups: the CLI's copies of the session .env hold the login.
   for f in .env.bak .env.bak.*; do
@@ -181,7 +199,7 @@ restore_checkout_in_root() {
     fi
   done < "$snap/had-files"
 
-  # .gitignore: via init appends its .env and .asd rules.
+  # .gitignore: via init appends its .env and runtime state rules.
   if [ -f "$snap/gitignore" ]; then
     local size appended=0
     size=$(wc -c < "$snap/gitignore" | tr -d ' ')
@@ -212,7 +230,7 @@ restore_checkout_in_root() {
       cleanup_log "Left .gitignore as it is: it changed beyond the lines via init appends (edited during the session?)."
     fi
   elif [ -f "$snap/no-gitignore" ] && [ -f .gitignore ]; then
-    if grep -q '(added by \.asd)' .gitignore; then
+    if grep -qE "$CLI_GITIGNORE_MARK" .gitignore; then
       rm -f .gitignore
       cleanup_log "Removed the .gitignore via init created (the repository had none)."
     else
@@ -225,25 +243,32 @@ restore_checkout_in_root() {
   while IFS= read -r d; do
     [ -n "$d" ] || continue
     rel="${d#"$root"/}"
+    what=$(dir_label "$rel")
     if grep -qxF -- "$d" "$snap/had-dirs"; then
-      cleanup_log "Left ${rel}/ in place: it was there before the session."
+      # The state folder the CLI did not write this time is just not there.
+      [ -e "$d" ] || [ -L "$d" ] || continue
+      cleanup_log "Left ${what} in place: it was there before the session."
       continue
     fi
     [ -e "$d" ] || [ -L "$d" ] || continue
     real=$(physical_path "$d")
     case "$real" in
       "$root"/?*) ;;
-      *) cleanup_log "Left ${d}: it is outside the checkout."; continue ;;
+      *) cleanup_log "Left ${what}: it is outside the checkout."; continue ;;
     esac
-    rel="${real#"$root"/}"
+    what=$(dir_label "${real#"$root"/}")
     if [ -f "$state/stop-failed" ]; then
-      cleanup_log "Left ${rel}/: $(cat "$state/stop-failed") failed, so a process may still run from it."
+      cleanup_log "Left ${what}: $(cat "$state/stop-failed") failed, so a process may still run from it."
       continue
     fi
     if rm -rf -- "$real"; then
-      cleanup_log "Removed ${rel}/ (the CLI's runtime state, created by this session)."
+      if [ "$what" = "the CLI's runtime state" ]; then
+        cleanup_log "Removed the CLI's runtime state (created by this session)."
+      else
+        cleanup_log "Removed ${what} (the CLI's runtime state, created by this session)."
+      fi
     else
-      cleanup_log "Warning: could not remove ${rel}/ completely."
+      cleanup_log "Warning: could not remove ${what} completely."
     fi
   done < "$snap/dirs"
 
@@ -360,7 +385,7 @@ cleanup_session() {
   fi
 
   # 5. What via init added next to .env: its backups of .env (with the
-  #    login), its .gitignore lines, workspace/ and .asd/.
+  #    login), its .gitignore lines, workspace/ and its runtime state folder.
   #    The marker goes before the note it points to: a cleanup killed in
   #    between leaves no marker, never a marker without its note.
   if [ -f "$state/checkout-noted" ]; then

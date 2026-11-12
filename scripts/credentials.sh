@@ -81,6 +81,15 @@ if ! [[ "$CLI_VERSION" =~ ^(latest|v?[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?)$ ]
   ci_error "cli-version must be latest, a release tag (vX.Y.Z) or a nightly tag (vX.Y.Z-nightly.YYYYMMDDTHHMM)."
   exit 1
 fi
+# The action passes its settings as VIA_* environment variables, which the
+# CLI reads from 3.2.0 on (it copies each VIA_X onto the name it reads inside).
+if [[ "$CLI_VERSION" =~ ^v?([0-9]+)\.([0-9]+)\. ]]; then
+  CLI_MAJOR=$((10#${BASH_REMATCH[1]})); CLI_MINOR=$((10#${BASH_REMATCH[2]}))
+  if [ "$CLI_MAJOR" -lt 3 ] || { [ "$CLI_MAJOR" -eq 3 ] && [ "$CLI_MINOR" -lt 2 ]; }; then
+    ci_error "cli-version must be 3.2.0 or later: older CLIs do not read the VIA_* settings this action passes."
+    exit 1
+  fi
+fi
 
 # 0 (or 00, ...) means no limit. Base 10, so 08 is eight, not an octal error.
 TIMEOUT="${INPUT_TIMEOUT_MINUTES:-0}"
