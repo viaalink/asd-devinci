@@ -6,6 +6,8 @@ SCRIPTS_DIR="${SCRIPTS_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 source "${SCRIPTS_DIR}/lib/ci.sh"
 # shellcheck source=cleanup.sh
 source "${SCRIPTS_DIR}/cleanup.sh"
+# shellcheck source=lib/relay-checks.sh
+source "${SCRIPTS_DIR}/lib/relay-checks.sh"
 
 # Publishes the services of the `expose` input through the relay, one
 # `via expose <port> <name>-<random> --auth=basic|none` each, and hands their
@@ -67,13 +69,27 @@ while IFS=$'\t' read -r port name auth published <&3; do
   alive=$(jq -r '.alive // false' <<< "$row")
   state=$(jq -r '.state // empty' <<< "$row")
   app_up=$(jq -r 'if has("appUp") then (.appUp | tostring) else "unknown" end' <<< "$row")
-  if [ -z "$url" ] || [ "$alive" != "true" ] || [ "$state" = "local" ] || [ "$state" = "not-running" ] \
-     || ! [[ "$url" =~ ^https:// ]]; then
+  if [ -n "$url" ] && ! relay_url_ok "$url"; then
+    ci_error "via expose list returned an address for ${name} that is not a plain https URL; refusing to use it."
+    exit 1
+  fi
+  if [ -z "$url" ] || [ "$alive" != "true" ] || [ "$state" = "local" ] || [ "$state" = "not-running" ]; then
     ci_error "${name} is not published through the relay (via expose exited ${rc}; via expose list shows no running tunnel with an https address for it). See the via expose output above."
     exit 1
   fi
   url="${url%/}"
   printf '%s\t%s\n' "$published" "$url" >> "${STATE_DIR}/exposure-urls"
+  # A login service must answer 401 without credentials. If not (no login
+  # resolved, a via.yaml that turns logins off, ...), it is open: the step
+  # fails and the trap takes every exposure of the session down.
+  if [ "$auth" != "public" ]; then
+    code=$(login_probe "$url")
+    if [ "$code" != "401" ]; then
+      ci_error "${name} was published, but answers HTTP ${code} without a login instead of 401. It is taken down again: a service without public is never left open."
+      exit 1
+    fi
+    echo "${name}: login in front checked (HTTP 401 without credentials)."
+  fi
   if [ "$app_up" = "false" ]; then
     ci_warning "Nothing answers on port ${port} yet: ${name} is published, but requests get HTTP 502 until your app listens there."
   elif [ "$rc" -ne 0 ]; then

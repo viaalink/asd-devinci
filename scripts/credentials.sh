@@ -223,10 +223,23 @@ if [ -z "${INPUT_PASSWORD:-}" ]; then
 fi
 
 # Per-session state (the .env backup, markers, the URL file) lives outside the
-# repository checkout.
-STATE_DIR="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/via-cicd-${NAME}"
-rm -rf "$STATE_DIR"
-mkdir -p "$STATE_DIR"
+# repository checkout, in a directory of this step alone: the session name,
+# the step's id (GITHUB_ACTION) and a random part. Two sessions in one job
+# (same tunnel-name, or both on the default short SHA) never share it, and
+# nothing here ever deletes another session's state.
+STATE_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+STEP_ID=$(printf '%s' "${GITHUB_ACTION:-step}" | tr -c 'A-Za-z0-9_-' '_' | cut -c1-40)
+STATE_RAND=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
+if ! [[ "$STATE_RAND" =~ ^[0-9a-f]{12}$ ]]; then
+  ci_error "Could not read random bytes for the session state directory."
+  exit 1
+fi
+STATE_DIR="${STATE_ROOT}/via-cicd-${NAME}-${STEP_ID}-${STATE_RAND}"
+# mkdir without -p: an existing directory (never expected) is refused, not reused.
+if ! mkdir "$STATE_DIR" 2>/dev/null; then
+  ci_error "The session state directory already exists; refusing to reuse another session's state. Run the step again."
+  exit 1
+fi
 chmod 700 "$STATE_DIR"
 printf '%s' "$EXPOSE_SPEC" > "${STATE_DIR}/expose-spec"
 
@@ -238,9 +251,24 @@ if [ "$INTERFACE" = "none" ]; then
   mkdir -p "$PROJECT_DIR"
 else
   PROJECT_DIR="${GITHUB_WORKSPACE:-$PWD}"
+  # One terminal or VS Code session per checkout: a second one would rewrite
+  # the same .env and share the same Caddy and web terminal. Refused while
+  # another session of this action still has live markers there.
+  for other in "${STATE_ROOT}"/via-cicd-*/; do
+    other="${other%/}"
+    [ "$other" != "$STATE_DIR" ] && [ -f "$other/project-dir" ] || continue
+    [ "$(cat "$other/project-dir")" = "$PROJECT_DIR" ] || continue
+    for marker in exposed exposures interface env-seeded checkout-noted caddy-started; do
+      if [ -e "$other/$marker" ]; then
+        rm -rf -- "$STATE_DIR"   # this step's own, just made
+        ci_error "Another session of this action is still running in this checkout (a terminal or VS Code). Use interface: none for a second session in the same job, or end the first one before."
+        exit 1
+      fi
+    done
+  done
 fi
+printf '%s' "$PROJECT_DIR" > "${STATE_DIR}/project-dir"
 
-# Step outputs, not job env: nothing of this leaks into the caller's steps.
 ci_set_output "session_name" "${NAME}"
 ci_set_output "interface" "${INTERFACE}"
 ci_set_output "mode" "${MODE}"

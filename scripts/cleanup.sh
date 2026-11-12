@@ -56,6 +56,21 @@ cleanup_log() {
   echo "[cleanup] $*"
 }
 
+# After an exposure is stopped the relay must answer 404 for its address.
+# Anything else is said loudly (a run warning), never passed over: 000 means
+# it could not be checked, any other status that something still answers.
+cleanup_not_gone() {
+  local code="${1:-000}" what="$2" msg
+  [ "$code" = "404" ] && return 0
+  if [ "$code" = "000" ]; then
+    msg="Could not confirm that ${what} is gone (no answer from the relay when checked)."
+  else
+    msg="${what} still answers HTTP ${code} after the exposure was stopped (404 expected)."
+  fi
+  cleanup_log "Warning: ${msg}"
+  if command -v ci_warning >/dev/null 2>&1; then ci_warning "$msg"; fi
+}
+
 # The folder the CLI keeps its project state in, in the checkout: newer CLIs
 # write .via, older ones the older name. The log never names the folder.
 CLI_STATE_DIRS=(.via .asd)
@@ -330,6 +345,7 @@ cleanup_session() {
       url=$(head -1 "$state/tunnel-url.txt")
       code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url" 2>/dev/null || true)
       cleanup_log "The relay now answers HTTP ${code:-000} for the session address (401 while it was published)."
+      cleanup_not_gone "$code" "the session address"
     fi
     rm -f "$state/exposed"
   fi
@@ -365,6 +381,7 @@ cleanup_session() {
       if [ -n "$url" ] && command -v curl >/dev/null 2>&1; then
         code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url" 2>/dev/null || true)
         cleanup_log "The relay now answers HTTP ${code:-000} for ${url}."
+        cleanup_not_gone "$code" "$url"
       fi
       rest=$(grep -vxF -- "$name" "$state/exposures" || true)
       if [ -n "$rest" ]; then printf '%s\n' "$rest" > "$state/exposures"; else : > "$state/exposures"; fi

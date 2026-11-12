@@ -126,7 +126,11 @@ started, published or stopped goes here first, then the CLI wrapper follows.
    marker is removed when done, so a killed cleanup leaves the rest to the
    next caller. keepalive.sh kills its background sleep first: left alive it
    holds the step's output open and the trap's log is lost.
-   Session state (backup, markers, URL file) lives in `$RUNNER_TEMP/via-cicd-<session>`;
+   Session state (backup, markers, URL file) lives in
+   `$RUNNER_TEMP/via-cicd-<session>-<GITHUB_ACTION>-<12 hex random>`, made with
+   `mkdir` (never reused, never `rm -rf`ed by another session): two sessions in
+   one job never share it. A second terminal/VS Code session in the same
+   checkout is refused while another has live markers there (`project-dir`);
    steps pass values as step outputs, never `$GITHUB_ENV` (the exceptions:
    the job-scoped CLI's `VIA_HOME`, next to its `GITHUB_PATH` entry, and the
    exposed addresses `VIAALINK_URL_*`, which are meant for the later steps).
@@ -138,6 +142,7 @@ started, published or stopped goes here first, then the CLI wrapper follows.
 - **URL never assembled**: shared and dedicated relays shape hostnames differently
 - **Host key pinning is never skipped** (`tunnel-host-key-fingerprints` is required)
 - **Logs**: never echo an input value in an error; mask the password (raw and URL-encoded) before any CLI step; do not print the relay host or key id. Exposed addresses are not masked (they are not secrets; the docs say a `public` one is protected only by its random part)
+- **Login routes are verified**: the terminal, VS Code and every non-`public` service are exposed with `--auth=basic`, then probed from the runner without credentials (`lib/relay-checks.sh` `login_probe`); anything but 401 ends the session and fails the step. Addresses from the CLI must match `relay_url_ok` (plain https host) before they reach GITHUB_OUTPUT/GITHUB_ENV. After a stop, anything but 404 is a run warning (`cleanup_not_gone`)
 - **No input in a `run:` line**: inputs reach scripts as step env only (`tests/expose.sh` checks action.yml)
 - **Public addresses are unguessable, not secret**: random part per service per run; the README tells users to verify webhook signatures / re-fetch payments, the action claims nothing more
 

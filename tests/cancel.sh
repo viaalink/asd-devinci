@@ -22,6 +22,7 @@ check() { local what="$1"; shift; if "$@"; then pass "$what"; else fail "$what";
 
 # A unique interval, so a leftover keep-alive sleep can be found by its args.
 INTERVAL=$(( 3000 + RANDOM % 900 ))
+export LOGIN_PROBE_INTERVAL=0
 
 make_stubs() {
   local t="$1"

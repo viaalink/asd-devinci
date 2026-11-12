@@ -4,7 +4,7 @@ Three things during a CI/CD job, published through your own Viaalink Relay:
 
 - **A browser terminal** (ttyd) on the runner, behind a login.
 - **VS Code** (code-server) on the runner, behind a login.
-- **Your services on temporary public addresses**: an app or API the job started, reachable from outside while the job runs. For example to receive payment-provider webhooks (Mollie, Adyen) in an end-to-end test. See [Expose services during a job](#expose-services-during-a-job).
+- **Your services on temporary public addresses**: an app or API the job started, reachable from outside while the job runs. For example to test real Mollie and Adyen webhooks from their test environments in CI, with no mocks. See [Expose services during a job](#expose-services-during-a-job) and [Test real Mollie and Adyen webhooks in CI](#test-real-mollie-and-adyen-webhooks-in-ci-no-mocks).
 
 Start a terminal from your laptop, open the link, and you are working inside the runner: the checked-out repository, the toolchain and the environment your pipeline sees. Useful to debug a job that only fails in CI, or to work on a machine you do not have locally. Nothing is opened on the runner itself: it connects out to your relay over SSH, and the relay serves the session under its own domain.
 
@@ -156,17 +156,38 @@ The addresses have no trailing slash and no login in them. A composite action on
 
 When nothing listens on a port yet, the service is published anyway and the log warns: start your app before the action, or make the test wait until it answers.
 
+### The login is checked, not assumed
+
+The terminal, VS Code and every service without `public` are published with `--auth=basic`. Right after each one is published, the action asks its address from the runner without credentials and requires HTTP 401. Anything else (for example a checked-out `via.yaml` that turns logins off) means the route is open: the action takes the session down and the step fails, saying which address answered what. A `public` service is not checked for a login, because it has none.
+
+### Two sessions in one job
+
+Each step of the action keeps its state in a directory of its own (session name, step id and a random part), so two sessions in one job never touch each other's state, and ending one leaves the other up. Use this to give a provider a login of its own: one step for your services, another with `interface: none` for the webhook endpoint. Only one session per job can have a terminal or VS Code in the checkout; a second one is refused with a clear error. Use `interface: none` for the others.
+
 ### Teardown
 
-Each exposure is stopped with `via expose stop` and checked: it is gone from `via expose list`, and the log has the HTTP status the relay now answers (404). In background mode the post step does this at the end of the job, also when a later step failed or the run was cancelled; when a step of the action itself fails, that step and the action's final step do it right away. Everything in "On the way out" below applies.
+Each exposure is stopped with `via expose stop`. The log then says whether it is gone from `via expose list` and which HTTP status the relay now answers for the address. 404 is the expected answer. Any other status, or no answer, is a warning on the run, not just a log line. In background mode the post step does this at the end of the job, also when a later step failed or the run was cancelled. When a step of the action itself fails, that step and the action's final step do it right away. Everything in "On the way out" below applies.
 
-## Receive Mollie / Adyen webhooks in CI
+## Test real Mollie and Adyen webhooks in CI, no mocks
 
-A payment provider calls your webhook endpoint from the internet; in CI that endpoint runs on the runner. Start the app, expose its port in background mode, and hand the address to the test that creates the payment:
+Mollie and Adyen both have test environments: Mollie's test mode (test API keys) and Adyen's test environment. They send real webhooks for test payments, the same requests your production endpoint gets. With this action the CI job gets a temporary address for your webhook endpoint, so an end-to-end payment test creates a test payment against the provider's own test servers and receives the provider's real webhook in a later step. You don't need simulated webhooks or mocked webhook code.
+
+The pattern is the same for both:
+
+1. Start your app on the runner.
+2. Expose its webhook endpoint with `interface: none` and `mode: background`. No terminal is involved, and the step returns.
+3. Create a test payment with the exposed address as the webhook / notification URL.
+4. In a later step, wait until your app has received and processed the webhook.
+
+When the job ends, the address is gone and the relay answers 404.
+
+### Mollie (test mode)
+
+Mollie cannot send a login with its webhooks, so the endpoint is `public`. A payment's `webhookUrl` is set per payment, which suits an address that changes every run. Mollie's webhook carries only the payment id (`id=tr_...`). Your handler must not trust the call: it fetches the payment by that id from the Mollie API and acts on the status Mollie returns. See Mollie's docs on [webhooks](https://docs.mollie.com/reference/webhooks), [creating a payment](https://docs.mollie.com/reference/create-payment) and [testing](https://docs.mollie.com/reference/testing).
 
 ```yaml
 jobs:
-  payment-e2e:
+  mollie-e2e:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -174,7 +195,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: npm ci
 
-      - name: Start the shop
+      - name: Start the shop (it logs each webhook it processed to webhooks.log)
         run: |
           nohup npm start > shop.log 2>&1 &
           curl --retry 30 --retry-delay 1 --retry-all-errors -fsS http://127.0.0.1:3000/health
@@ -193,30 +214,68 @@ jobs:
           expose: |
             3000 webhooks public
 
-      - name: Payment test
+      - name: Create a test payment with this run's webhook URL
         env:
-          MOLLIE_API_KEY: ${{ secrets.MOLLIE_TEST_API_KEY }}
+          MOLLIE_API_KEY: ${{ secrets.MOLLIE_TEST_API_KEY }}   # a test_... key: test mode
           # e.g. https://webhooks-3f9a1c0d2b4e5f67.relay.example.com/webhooks/mollie
           WEBHOOK_URL: ${{ fromJSON(steps.via.outputs.urls).webhooks }}/webhooks/mollie
-        run: npm run test:payments
+        run: |
+          curl -fsS https://api.mollie.com/v2/payments \
+            -H "Authorization: Bearer ${MOLLIE_API_KEY}" \
+            -d "amount[currency]=EUR" -d "amount[value]=10.00" \
+            -d "description=CI order ${GITHUB_RUN_ID}" \
+            -d "redirectUrl=https://shop.example.com/return" \
+            --data-urlencode "webhookUrl=${WEBHOOK_URL}" > payment.json
+          jq -r .id payment.json
+          # In test mode you pick the outcome (paid, failed, ...) on the payment's
+          # test checkout page, _links.checkout.href in payment.json: open it in your
+          # browser test (Playwright, ...) and choose "paid".
+
+      - name: Wait for Mollie's webhook
+        run: |
+          id=$(jq -r .id payment.json)
+          for i in $(seq 60); do grep -q "$id" webhooks.log 2>/dev/null && exit 0; sleep 5; done
+          echo "No webhook for $id"; exit 1
 ```
 
-The test creates a Mollie payment with `webhookUrl: process.env.WEBHOOK_URL`, completes it in test mode, and waits until the shop has processed the webhook. When the job ends the address is gone (the relay answers 404). A `public` service needs no `password` input.
+### Adyen (test environment)
 
-**Mollie** cannot send a login with its webhooks, so expose the endpoint `public`. Mollie's payment webhook (the `webhookUrl` of a payment) carries only the payment id (`id=tr_...`): your handler must not trust the call, but fetch the payment by that id from the Mollie API and act on the status it returns. Mollie takes the webhook URL per payment, which suits an address that changes every run.
-
-**Adyen** supports basic authentication on its webhooks, so keep the endpoint behind the login (leave out `public`):
+Adyen supports basic authentication on its webhooks, so keep the endpoint behind a login, the default (no `public`). Give Adyen a username and password of its own: a separate step of the action with `interface: none`, so no terminal or other service shares that login. Configure the same username and password on the webhook in your Adyen test Customer Area, and verify the HMAC signature of every notification in your handler (Adyen's HMAC key). Adyen keeps the webhook URL on the webhook configuration, not on the payment. Before the test, point the test webhook at this run's address, in the Customer Area or with Adyen's Management API, and point it back afterwards. See Adyen's docs on [webhooks](https://docs.adyen.com/development-resources/webhooks/), [verifying HMAC signatures](https://docs.adyen.com/development-resources/webhooks/secure-webhooks/verify-hmac-signatures/), the [Management API](https://docs.adyen.com/api-explorer/Management/latest/overview) and [testing](https://docs.adyen.com/development-resources/testing/).
 
 ```yaml
-          password: ${{ secrets.VIA_TERMINAL_PASSWORD }}
+      - name: Expose the Adyen webhook endpoint (its own login, no terminal)
+        id: adyen
+        uses: viaalink/cicd@v2
+        with:
+          tunnel-key: ${{ secrets.VIA_TUNNEL_KEY }}
+          tunnel-key-id: ${{ secrets.VIA_TUNNEL_KEY_ID }}
+          tunnel-host: ${{ secrets.VIA_TUNNEL_HOST }}
+          tunnel-port: ${{ secrets.VIA_TUNNEL_PORT }}
+          tunnel-host-key-fingerprints: ${{ secrets.VIA_TUNNEL_HOST_KEY_FINGERPRINTS }}
+          interface: none          # no terminal: the login is Adyen's alone
+          mode: background
           username: adyen
+          password: ${{ secrets.ADYEN_WEBHOOK_PASSWORD }}   # the same password as on the Adyen webhook
           expose: |
             3000 webhooks
+
+      - name: Point the Adyen test webhook at this run, then run the payment test
+        env:
+          # e.g. https://webhooks-3f9a1c0d2b4e5f67.relay.example.com
+          ADYEN_WEBHOOK_URL: ${{ fromJSON(steps.adyen.outputs.urls).webhooks }}/webhooks/adyen
+        run: npm run test:adyen   # your script: update the webhook URL, create a test payment, wait for the notification
 ```
 
-and configure the same username and password for the webhook in Adyen. Also verify the HMAC signature of every notification in your handler (Adyen's HMAC key). Adyen keeps the webhook URL on the webhook configuration, not per payment: point it at this run's address before the test (for example with Adyen's Management API) and back afterwards.
+The `username` and `password` of a step apply to everything behind the login in that session. That is why Adyen gets a step of its own with `interface: none`. Don't add Adyen's endpoint to a session that also has a terminal, VS Code or your own services: they would share one password.
 
-**What the action does and does not protect.** The random part keeps the address from being guessed; the login (when not `public`) keeps out callers without the password; your relay serves it over HTTPS. Whoever has the address of a `public` service can call it until the job ends: the provider, and anyone who can read the run's log or summary. That is why the handler must verify every webhook itself (Mollie: fetch the payment; Adyen: check the HMAC signature) and never act on what the request body claims.
+### What the action does and does not protect
+
+- **The random part:** it keeps the address from being guessed.
+- **The login:** when a service is not `public`, it keeps out callers without the password, and the action checks that it is really there (401).
+- **HTTPS:** your relay serves the address over HTTPS.
+- **A `public` service:** whoever has its address can call it until the job ends. That includes the provider and anyone who can read the run's log or summary.
+
+That is why the handler must verify every webhook itself (Mollie: fetch the payment; Adyen: check the HMAC signature) and never act on what the request body claims.
 
 ## Start, stop and manage a session
 
@@ -250,6 +309,7 @@ The session works the same on self-hosted runners: choose `self-hosted` as the o
 
 - The runner needs outbound SSH to the relay port (2222 unless `VIA_TUNNEL_PORT` says otherwise), HTTPS to GitHub (the CLI installer), and `bash`, `curl` and `jq`; on Windows also PowerShell and Git Bash.
 - Linux, macOS and Windows runners are supported (x64; arm64 on Linux and macOS).
+- The relay client (the tunnel) of an exposure runs on the runner until the session ends. The GitHub runner also stops processes a job leaves behind when the job ends. If the runner itself crashes or is killed mid-job, neither may happen, and an address can stay published until that process stops. On a self-hosted runner, check after such a crash: `via expose list --verbose` shows the tunnels on the machine, and `via expose list --prune` stops relay clients that no service of yours uses. Removing the CI device from the relay ends them for certain.
 - A self-hosted runner keeps its disk between jobs. The action takes back what it and `via init` put in the checkout (see above) and installs the CLI for the job only, so other jobs on the runner keep the `via` they had. What you do in the terminal itself (files you make, programs you install, processes you leave running) stays: prefer ephemeral runners, or a runner dedicated to these sessions.
 
 ## Security notes

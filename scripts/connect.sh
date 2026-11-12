@@ -6,6 +6,8 @@ SCRIPTS_DIR="${SCRIPTS_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 source "${SCRIPTS_DIR}/lib/ci.sh"
 # shellcheck source=cleanup.sh
 source "${SCRIPTS_DIR}/cleanup.sh"
+# shellcheck source=lib/relay-checks.sh
+source "${SCRIPTS_DIR}/lib/relay-checks.sh"
 
 # Port of the CLI terminal workflow's "Publish through the relay" step. The
 # relay key, host key pins and login arrive as step env (VIA_TUNNEL_*,
@@ -25,7 +27,9 @@ on_exit() {
 trap on_exit EXIT
 
 touch "${STATE_DIR}/exposed"
-via expose "$SESSION_TARGET" "$SESSION_NAME"
+# --auth=basic: the terminal and VS Code are never published without the
+# login, whatever expose_auth or a checked-out via.yaml says.
+via expose "$SESSION_TARGET" "$SESSION_NAME" --auth=basic
 note_caddy_started
 
 # The hostname depends on the relay (a shared relay appends the client id, a
@@ -36,6 +40,20 @@ if [ -z "$URL" ]; then
   ci_error "via expose returned but lists no tunnel URL for this session."
   exit 1
 fi
+if ! relay_url_ok "$URL"; then
+  ci_error "via expose list returned an address for this session that is not a plain https URL; refusing to use it."
+  exit 1
+fi
+
+# The login must really be in front: without credentials the address has to
+# answer 401. Anything else (200, a 502 from the app itself) means it is
+# open; the session is ended (the trap) instead of handed out.
+CODE=$(login_probe "$URL")
+if [ "$CODE" != "401" ]; then
+  ci_error "The ${SESSION_INTERFACE} was published, but its address answers HTTP ${CODE} without a login instead of 401. It is taken down again: the action never leaves it open."
+  exit 1
+fi
+echo "Login in front checked: HTTP 401 without credentials."
 
 echo "$URL" > "${STATE_DIR}/tunnel-url.txt"
 echo "Tunnel URL: $URL"

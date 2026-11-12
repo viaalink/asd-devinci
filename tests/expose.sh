@@ -17,6 +17,8 @@ fail() { echo "FAIL - $*"; FAILS=$((FAILS + 1)); }
 check() { local what="$1"; shift; if "$@"; then pass "$what"; else fail "$what"; fi; }
 
 INTERVAL=$(( 4000 + RANDOM % 900 ))
+# The login check retries without waiting here.
+export LOGIN_PROBE_INTERVAL=0 LOGIN_PROBE_TRIES=3
 CANARY="$(mktemp -d)/pwned"
 
 make_stubs() {
@@ -41,13 +43,17 @@ case "$1 ${2:-}" in
     for f in "$FAKE"/exposed.d/*; do
       [ -e "$f" ] || continue
       n=$(basename "$f")
-      rows="${rows:+$rows,}{\"id\":\"$n\",\"name\":\"$n\",\"url\":\"https://$n-ci.relay.example.com/\",\"alive\":true,\"state\":\"online\",\"appUp\":$(cat "$f")}"
+      u="https://$n-ci.relay.example.com/"
+      # FAKE/bad-url: the relay hands back something that is not a plain URL.
+      [ -f "$FAKE/bad-url" ] && u=$(cat "$FAKE/bad-url")
+      rows="${rows:+$rows,}$(jq -cn --arg n "$n" --arg u "$u" --argjson up "$(cat "$f")" \
+        '{id: $n, name: $n, url: $u, alive: true, state: "online", appUp: $up}')"
     done
     if [ -f "$FAKE/exposed" ]; then
       rows="${rows:+$rows,}{\"id\":\"demo\",\"name\":\"demo\",\"url\":\"https://demo-ci.relay.example.com/\",\"alive\":true,\"state\":\"online\"}"
     fi
     echo "{\"exposed\":[${rows}]}" ;;
-  "expose ttyd") touch "$FAKE/exposed" "$FAKE/caddy" ;;
+  "expose ttyd") echo "$4" > "$FAKE/auth-demo"; touch "$FAKE/exposed" "$FAKE/caddy" ;;
   "expose "[0-9]*)
     echo "$4" > "$FAKE/auth-$3"
     touch "$FAKE/caddy"
@@ -63,11 +69,21 @@ EOF
 #!/bin/bash
 [ "$*" = "-x caddy" ] && [ -f "$FAKE/caddy" ]
 EOF
-  # curl: 200 while the address's name is exposed, 404 after.
+  # curl: while the address's name is exposed, 401 without credentials when
+  # it was exposed with --auth=basic (FAKE/fail-open: the login is missing,
+  # 200), else 200; 404 after (FAKE/still-answers: 200 after the stop too).
   cat > "$t/bin/curl" <<'EOF'
 #!/bin/bash
 url="${*: -1}"; host="${url#https://}"; n="${host%%-ci.*}"
-if [ -f "$FAKE/exposed.d/$n" ] || { [ "$n" = demo ] && [ -f "$FAKE/exposed" ]; }; then printf 200; else printf 404; fi
+if [ -f "$FAKE/exposed.d/$n" ] || { [ "$n" = demo ] && [ -f "$FAKE/exposed" ]; }; then
+  creds=0; for a in "$@"; do [ "$a" = "-u" ] && creds=1; done
+  if [ "$(cat "$FAKE/auth-$n" 2>/dev/null)" = "--auth=basic" ] && [ "$creds" = 0 ] && [ ! -f "$FAKE/fail-open" ]; then
+    printf 401
+  else
+    printf 200
+  fi
+elif [ -f "$FAKE/still-answers" ]; then printf 200
+else printf 404; fi
 EOF
   chmod +x "$t/bin/"*
 }
@@ -88,18 +104,18 @@ refused() { ! cred "$@" >/dev/null; }
 echo "# 1. The expose input: what is accepted"
 CRED_TEMP="$(mktemp -d)"
 OUT1="$(CRED_TEMP="$CRED_TEMP" cred $'# the app\n3000 shop\n\n8080   webhooks  public  # Mollie\r\n09 api login')"
-SPEC="$CRED_TEMP/via-cicd-abcdef1/expose-spec"
+SPEC=$(echo "$CRED_TEMP"/via-cicd-abcdef1-*/expose-spec)
 check "three services counted" grep -q "services to expose: 3" <<<"$OUT1"
 check "spec has three lines" test "$(wc -l < "$SPEC" | tr -d ' ')" = 3
 check "port, name, login, published name (tab separated)" \
   grep -qE $'^3000\tshop\tlogin\tshop-[0-9a-f]{16}$' "$SPEC"
 check "public kept" grep -qE $'^8080\twebhooks\tpublic\twebhooks-[0-9a-f]{16}$' "$SPEC"
 check "leading zeros are base 10" grep -qE $'^9\tapi\tlogin\t' "$SPEC"
-check "interface none runs the CLI outside the checkout" grep -q "project_dir=.*/via-cicd-abcdef1/project" <<<"$OUT1"
+check "interface none runs the CLI outside the checkout" grep -qE "project_dir=.*/via-cicd-abcdef1-[A-Za-z0-9_-]+-[0-9a-f]{12}/project" <<<"$OUT1"
 R1=$(cut -f4 "$SPEC" | head -1)
 CRED_TEMP2="$(mktemp -d)"
 CRED_TEMP="$CRED_TEMP2" cred "3000 shop" >/dev/null
-R2=$(cut -f4 "$CRED_TEMP2/via-cicd-abcdef1/expose-spec")
+R2=$(cut -f4 "$CRED_TEMP2"/via-cicd-abcdef1-*/expose-spec)
 check "the random part differs per run" test "$R1" != "$R2"
 check "a 32-character name is accepted" accepted "1 $(printf 'a%.0s' $(seq 32))"
 check "ten services are accepted" accepted "$(for i in $(seq 10); do echo "$((3000 + i)) s$i public"; done)"
@@ -301,6 +317,137 @@ check "and says so" grep -q "ends at the end of the job" <<<"$STAGE8"
 echo "# 9. No input is inlined into a run: script"
 INLINED="$(awk '/^ *run: /{print FILENAME":"NR": "$0}' "$ROOT/action.yml" | grep -F '${{' || true)"
 check "every run: line is free of \${{ }} (${INLINED:-none})" test -z "$INLINED"
+
+echo "# 10. Two sessions in one job: each has its own state, nothing is shared"
+T10="$(mktemp -d)"
+OUT10A="$(CRED_TEMP="$T10" cred "8080 hooks public" GITHUB_ACTION=via1)"
+DIR_A=$(sed -n 's/^OUTPUT: state_dir=//p' <<<"$OUT10A")
+touch "$DIR_A/exposures"; echo "hooks-aaaa" > "$DIR_A/exposures"
+OUT10B="$(CRED_TEMP="$T10" cred "8081 api public" GITHUB_ACTION=via2)"
+DIR_B=$(sed -n 's/^OUTPUT: state_dir=//p' <<<"$OUT10B")
+check "same session name, two state directories" test -n "$DIR_A" -a -n "$DIR_B" -a "$DIR_A" != "$DIR_B"
+check "the step id is part of it" bash -c '[[ "$1" == *-via1-* && "$2" == *-via2-* ]]' _ "$DIR_A" "$DIR_B"
+check "session 2 left session 1's markers alone" test "$(cat "$DIR_A/exposures")" = "hooks-aaaa"
+OUT10C="$(CRED_TEMP="$T10" cred "8080 hooks public" GITHUB_ACTION=via1)"
+DIR_C=$(sed -n 's/^OUTPUT: state_dir=//p' <<<"$OUT10C")
+check "even the same step id twice gets a new directory" test -n "$DIR_C" -a "$DIR_C" != "$DIR_A"
+check "and session 1's markers are still there" test -f "$DIR_A/exposures"
+# A second terminal session in the same checkout is refused while one runs.
+WS10="$T10/checkout"; mkdir -p "$WS10"
+OUT10D="$(CRED_TEMP="$T10" cred "" INPUT_INTERFACE=terminal GITHUB_ACTION=t1 GITHUB_WORKSPACE="$WS10")"
+DIR_D=$(sed -n 's/^OUTPUT: state_dir=//p' <<<"$OUT10D")
+touch "$DIR_D/env-seeded"
+check "a second terminal session in the same checkout is refused" \
+  refused "" INPUT_INTERFACE=terminal GITHUB_ACTION=t2 GITHUB_WORKSPACE="$WS10" RUNNER_TEMP="$T10"
+OUT10E="$(CRED_TEMP="$T10" cred "" INPUT_INTERFACE=terminal GITHUB_ACTION=t2 GITHUB_WORKSPACE="$WS10" || true)"
+check "with a clear message" grep -q "Another session of this action is still running in this checkout" <<<"$OUT10E"
+check "and the first session's state is untouched" test -f "$DIR_D/env-seeded"
+check "an expose-only session next to it is fine" accepted "8080 hooks public" GITHUB_ACTION=t3 GITHUB_WORKSPACE="$WS10" RUNNER_TEMP="$T10"
+
+echo "# 11. Two background sessions in one job: ending one leaves the other up"
+T11="$(mktemp -d)"
+make_stubs "$T11"
+run_session() {  # $1 = state dir, $2 = spec line
+  mkdir -p "$1/project"
+  printf '%s\n' "$2" > "$1/expose-spec"
+  (cd "$1/project" && FAKE="$T11/fake" PATH="$T11/bin:$PATH" STATE_DIR="$1" SESSION_NAME=abcdef1 \
+    SESSION_INTERFACE=none SESSION_USERNAME=via SESSION_PASSWORD=pw SESSION_SHELL=bash \
+    VIA_WORKSPACE_DIR="$1/project/workspace" SCRIPTS_DIR="$SCRIPTS" GITHUB_ACTIONS="" \
+    bash "$SCRIPTS/start-interface.sh" >/dev/null 2>&1 && \
+   cd "$1/project" && FAKE="$T11/fake" PATH="$T11/bin:$PATH" STATE_DIR="$1" SESSION_NAME=abcdef1 \
+    VIA_BASIC_AUTH_USERNAME=via VIA_BASIC_AUTH_PASSWORD=pw SCRIPTS_DIR="$SCRIPTS" GITHUB_ACTIONS="" \
+    bash "$SCRIPTS/expose.sh" >/dev/null 2>&1)
+}
+post_session() {  # $1 = state dir
+  env FAKE="$T11/fake" PATH="$T11/bin:$PATH" GITHUB_ACTIONS="" "INPUT_STATE-DIR=$1" \
+    "INPUT_PROJECT-DIR=$1/project" "INPUT_SESSION-NAME=abcdef1" "INPUT_SCRIPTS-DIR=$SCRIPTS" \
+    INPUT_USERNAME=via INPUT_PASSWORD=pw node "$ROOT/post/post.js" 2>&1
+}
+S1="$T11/via-cicd-abcdef1-via1-aaaaaaaaaaaa"; S2="$T11/via-cicd-abcdef1-via2-bbbbbbbbbbbb"
+run_session "$S1" $'8080\thooks\tpublic\thooks-1111111111111111'
+run_session "$S2" $'8081\tapi\tlogin\tapi-2222222222222222'
+check "both sessions published" test -f "$T11/fake/exposed.d/hooks-1111111111111111" -a -f "$T11/fake/exposed.d/api-2222222222222222"
+POST11B="$(post_session "$S2")"
+check "session 2's post step stops its own service" test ! -e "$T11/fake/exposed.d/api-2222222222222222"
+check "and not session 1's" test -f "$T11/fake/exposed.d/hooks-1111111111111111"
+check "session 2 never names session 1's service" bash -c "! grep -q hooks-1111 <<<\"\$1\"" _ "$POST11B"
+POST11A="$(post_session "$S1")"
+check "session 1's post step stops its service" test ! -e "$T11/fake/exposed.d/hooks-1111111111111111"
+check "and says it now answers 404" grep -q "now answers HTTP 404 for https://hooks-1111111111111111" <<<"$POST11A"
+
+echo "# 12. A login route that answers without the login is taken down"
+T12="$(mktemp -d)"
+make_stubs "$T12"; touch "$T12/fake/fail-open"
+mkdir -p "$T12/state" "$T12/project"
+printf '8080\thooks\tpublic\thooks-1111111111111111\n3000\tshop\tlogin\tshop-0123456789abcdef\n' > "$T12/state/expose-spec"
+set +e
+OUT12="$(cd "$T12/project" && FAKE="$T12/fake" PATH="$T12/bin:$PATH" STATE_DIR="$T12/state" SESSION_NAME=demo \
+  SCRIPTS_DIR="$SCRIPTS" GITHUB_ACTIONS="" bash "$SCRIPTS/expose.sh" 2>&1)"; RC12=$?
+set -e
+check "the step fails" test "$RC12" -ne 0
+check "and says the login is missing" grep -q "shop was published, but answers HTTP 200 without a login instead of 401" <<<"$OUT12"
+check "shop is taken down" test ! -e "$T12/fake/exposed.d/shop-0123456789abcdef"
+check "and so is the rest of the session" test ! -e "$T12/fake/exposed.d/hooks-1111111111111111"
+check "a public service is not probed for a login" bash -c "! grep -q 'hooks was published, but' <<<\"\$1\"" _ "$OUT12"
+check "login services are exposed with --auth=basic" test "$(cat "$T12/fake/auth-shop-0123456789abcdef")" = "--auth=basic"
+# The terminal: --auth=basic, and the same check.
+T12B="$(mktemp -d)"
+make_stubs "$T12B"
+mkdir -p "$T12B/state" "$T12B/repo"
+(cd "$T12B/repo" && FAKE="$T12B/fake" PATH="$T12B/bin:$PATH" STATE_DIR="$T12B/state" SESSION_NAME=demo \
+  SESSION_INTERFACE=terminal SESSION_TARGET=ttyd VIA_BASIC_AUTH_USERNAME=via VIA_BASIC_AUTH_PASSWORD=pw \
+  SCRIPTS_DIR="$SCRIPTS" GITHUB_ACTIONS="" bash "$SCRIPTS/connect.sh" >"$T12B/ok.log" 2>&1) || fail "connect.sh failed: $(cat "$T12B/ok.log")"
+check "the terminal is exposed with --auth=basic" grep -qx "via expose ttyd demo --auth=basic" "$T12B/fake/calls"
+check "and its login checked" grep -q "Login in front checked: HTTP 401" "$T12B/ok.log"
+T12C="$(mktemp -d)"
+make_stubs "$T12C"; touch "$T12C/fake/fail-open"
+mkdir -p "$T12C/state" "$T12C/repo"
+set +e
+OUT12C="$(cd "$T12C/repo" && FAKE="$T12C/fake" PATH="$T12C/bin:$PATH" STATE_DIR="$T12C/state" SESSION_NAME=demo \
+  SESSION_INTERFACE=terminal SESSION_TARGET=ttyd VIA_BASIC_AUTH_USERNAME=via VIA_BASIC_AUTH_PASSWORD=pw \
+  SCRIPTS_DIR="$SCRIPTS" GITHUB_ACTIONS="" bash "$SCRIPTS/connect.sh" 2>&1)"; RC12C=$?
+set -e
+check "an open terminal fails the step" test "$RC12C" -ne 0
+check "with a clear message" grep -q "terminal was published, but its address answers HTTP 200 without a login" <<<"$OUT12C"
+check "and is taken down" test ! -e "$T12C/fake/exposed"
+check "no url output was written for it" bash -c "! grep -q 'url_base=' <<<\"\$1\"" _ "$OUT12C"
+
+echo "# 13. An address from the relay that is not a plain https URL is refused"
+for bad in $'https://x.example.com/\nEVIL=1' "https://x.example.com/path" "http://x.example.com" \
+           "https://user:pw@x.example.com" "https://x.example.com/?a=b" "https://X.example.com" "https://-x.example.com"; do
+  T13="$(mktemp -d)"
+  make_stubs "$T13"; printf '%s' "$bad" > "$T13/fake/bad-url"
+  mkdir -p "$T13/state" "$T13/project"; : > "$T13/env"; : > "$T13/out"
+  printf '8080\thooks\tpublic\thooks-1111111111111111\n' > "$T13/state/expose-spec"
+  set +e
+  OUT13="$(cd "$T13/project" && FAKE="$T13/fake" PATH="$T13/bin:$PATH" STATE_DIR="$T13/state" SESSION_NAME=demo \
+    SCRIPTS_DIR="$SCRIPTS" GITHUB_ACTIONS=true GITHUB_ENV="$T13/env" GITHUB_OUTPUT="$T13/out" \
+    GITHUB_STEP_SUMMARY=/dev/null bash "$SCRIPTS/expose.sh" 2>&1)"; RC13=$?
+  set -e
+  check "refused: $(printf '%q' "$bad")" test "$RC13" -ne 0
+  check "  nothing written to GITHUB_ENV / GITHUB_OUTPUT" test ! -s "$T13/env" -a ! -s "$T13/out"
+  rm -rf "$T13"
+done
+for good in "https://hooks-1a2b-ci.relay.example.com" "https://hooks.example.com/" "https://hooks.example.com:8443/"; do
+  T13="$(mktemp -d)"; make_stubs "$T13"; printf '%s' "$good" > "$T13/fake/bad-url"
+  mkdir -p "$T13/state" "$T13/project"
+  printf '8080\thooks\tpublic\thooks-1111111111111111\n' > "$T13/state/expose-spec"
+  check "accepted: $good" bash -c "cd '$T13/project' && FAKE='$T13/fake' PATH='$T13/bin:$PATH' STATE_DIR='$T13/state' SESSION_NAME=demo SCRIPTS_DIR='$SCRIPTS' GITHUB_ACTIONS= bash '$SCRIPTS/expose.sh' >/dev/null 2>&1"
+  rm -rf "$T13"
+done
+
+echo "# 14. An address that still answers after the stop is a loud warning"
+T14="$(mktemp -d)"
+make_stubs "$T14"
+mkdir -p "$T14/state"
+echo "hooks-1111111111111111" > "$T14/state/exposures"
+printf 'hooks-1111111111111111\thttps://hooks-1111111111111111-ci.relay.example.com\n' > "$T14/state/exposure-urls"
+touch "$T14/fake/still-answers"
+OUT14="$(cd "$T14" && FAKE="$T14/fake" PATH="$T14/bin:$PATH" STATE_DIR="$T14/state" GITHUB_ACTIONS=true \
+  bash "$SCRIPTS/cleanup.sh" 2>&1)"
+check "a run warning, not a quiet line" grep -q "^::warning::https://hooks-1111111111111111-ci.relay.example.com still answers HTTP 200 after the exposure was stopped (404 expected)." <<<"$OUT14"
+
+rm -rf "$T10" "$T11" "$T12" "$T12B" "$T12C" "$T14"
 
 rm -rf "$CRED_TEMP" "$CRED_TEMP2" "$T4" "$T4B" "$T5" "$T6" "$T7" "$T8" "$(dirname "$CANARY")"
 if [ "$FAILS" -gt 0 ]; then
