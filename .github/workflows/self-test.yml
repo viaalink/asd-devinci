@@ -42,11 +42,11 @@ on:
         default: '0'
 
 concurrency:
-  group: ci-terminal-${{ github.actor }}
+  group: via-cicd-${{ github.actor }}
   cancel-in-progress: false
 
 jobs:
-  ci-terminal:
+  cicd:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 360
     permissions:
