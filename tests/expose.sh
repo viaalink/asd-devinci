@@ -51,8 +51,11 @@ case "$1 ${2:-}" in
   "expose "[0-9]*)
     echo "$4" > "$FAKE/auth-$3"
     touch "$FAKE/caddy"
-    if [ -n "${FAKE_FAIL_NAME:-}" ] && [[ "$3" == "$FAKE_FAIL_NAME"* ]]; then exit 0; fi
-    if [ -f "$FAKE/app-down" ]; then echo false > "$FAKE/exposed.d/$3"; else echo true > "$FAKE/exposed.d/$3"; fi ;;
+    if [ -n "${FAKE_FAIL_NAME:-}" ] && [[ "$3" == "$FAKE_FAIL_NAME"* ]]; then exit 1; fi
+    # Like the CLI: exit 1 when the tunnel failed, and also when it is up but
+    # the address does not answer (nothing on the port).
+    if [ -f "$FAKE/app-down" ]; then echo false > "$FAKE/exposed.d/$3"; exit 1; fi
+    echo true > "$FAKE/exposed.d/$3" ;;
 esac
 exit 0
 EOF
@@ -183,6 +186,7 @@ printf '3000\tshop\tlogin\tshop-0123456789abcdef\n' > "$T4B/state/expose-spec"
 OUT4B="$(cd "$T4B/project" && FAKE="$T4B/fake" PATH="$T4B/bin:$PATH" STATE_DIR="$T4B/state" SESSION_NAME=demo \
   SCRIPTS_DIR="$SCRIPTS" GITHUB_ACTIONS="" bash "$SCRIPTS/expose.sh" 2>&1)" || true
 check "warns that nothing answers on the port yet" grep -q "Nothing answers on port 3000 yet" <<<"$OUT4B"
+check "and does not fail on via expose's exit 1" test -f "$T4B/state/exposure-urls"
 
 echo "# 5. A failed expose step stops what it already exposed"
 T5="$(mktemp -d)"

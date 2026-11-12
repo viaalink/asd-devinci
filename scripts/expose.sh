@@ -51,7 +51,11 @@ while IFS=$'\t' read -r port name auth published <&3; do
 
   echo "$published" >> "${STATE_DIR}/exposures"
   echo "Exposing port ${port} as ${name} (${what})"
-  via expose "$port" "$published" "$flag" < /dev/null
+  # via expose exits 1 both when the tunnel failed and when the tunnel is up
+  # but the address does not answer yet (nothing listens on the port). Which
+  # one it was is read from via expose list below, not from the exit code.
+  rc=0
+  via expose "$port" "$published" "$flag" < /dev/null || rc=$?
   note_caddy_started
 
   # The address depends on the relay (a shared relay appends the client id,
@@ -65,13 +69,15 @@ while IFS=$'\t' read -r port name auth published <&3; do
   app_up=$(jq -r 'if has("appUp") then (.appUp | tostring) else "unknown" end' <<< "$row")
   if [ -z "$url" ] || [ "$alive" != "true" ] || [ "$state" = "local" ] || [ "$state" = "not-running" ] \
      || ! [[ "$url" =~ ^https:// ]]; then
-    ci_error "via expose returned, but ${name} is not published through the relay (no running tunnel with an https address in via expose list)."
+    ci_error "${name} is not published through the relay (via expose exited ${rc}; via expose list shows no running tunnel with an https address for it). See the via expose output above."
     exit 1
   fi
   url="${url%/}"
   printf '%s\t%s\n' "$published" "$url" >> "${STATE_DIR}/exposure-urls"
   if [ "$app_up" = "false" ]; then
-    ci_warning "Nothing answers on port ${port} yet: ${name} is published, but requests get an error until your app listens there."
+    ci_warning "Nothing answers on port ${port} yet: ${name} is published, but requests get HTTP 502 until your app listens there."
+  elif [ "$rc" -ne 0 ]; then
+    ci_warning "${name} is published (its tunnel runs), but its address did not answer when via expose checked it (exit ${rc}). See the via expose output above."
   fi
 
   URLS=$(jq -c --arg k "$name" --arg v "$url" '. + {($k): $v}' <<< "$URLS")
