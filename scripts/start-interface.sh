@@ -54,8 +54,8 @@ if [ -f .env ]; then
 fi
 touch "${STATE_DIR}/env-seeded"
 note_caddy_before
-# With interface: none and only public services there is no password: no
-# login lines then.
+# Without a password input (interface: none, every service public) the
+# password is the random one credentials.sh made for this run.
 {
   if [ -n "${SESSION_PASSWORD:-}" ]; then
     echo "ASD_BASIC_AUTH_USERNAME=${SESSION_USERNAME}"

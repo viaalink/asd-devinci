@@ -102,6 +102,14 @@ check "a 32-character name is accepted" accepted "1 $(printf 'a%.0s' $(seq 32))"
 check "ten services are accepted" accepted "$(for i in $(seq 10); do echo "$((3000 + i)) s$i public"; done)"
 check "public only, interface none: no password needed" accepted "8080 hooks public" INPUT_PASSWORD=
 check "port 65535 accepted" accepted "65535 top"
+: > "$CRED_TEMP/out"
+GEN_LOG="$(cred "8080 hooks public" INPUT_PASSWORD= GITHUB_ACTIONS=true GITHUB_OUTPUT="$CRED_TEMP/out")"
+GEN=$(grep '^generated_password=' "$CRED_TEMP/out" | cut -d= -f2-)
+check "no password: a random login for the CLI (48 hex)" grep -qE '^[0-9a-f]{48}$' <<<"$GEN"
+check "and it is masked" grep -qxF "::add-mask::${GEN}" <<<"$GEN_LOG"
+: > "$CRED_TEMP/out"
+cred "3000 shop" GITHUB_ACTIONS=true GITHUB_OUTPUT="$CRED_TEMP/out" >/dev/null
+check "a given password: nothing generated" grep -qx 'generated_password=' "$CRED_TEMP/out"
 
 echo "# 2. The expose input: what is refused"
 check "port 0" refused "0 shop"

@@ -207,6 +207,21 @@ if [ -n "${INPUT_PASSWORD:-}" ]; then
   fi
 fi
 
+# No password given (interface: none, every service public): the CLI still
+# wants a project login before it starts Caddy (the hub's own routes, such
+# as its database tool, are never served without one). A random one for
+# this run, masked, never printed, used for nothing the user calls: what
+# `via env init` would seed.
+GENERATED_PASSWORD=""
+if [ -z "${INPUT_PASSWORD:-}" ]; then
+  GENERATED_PASSWORD=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
+  if ! [[ "$GENERATED_PASSWORD" =~ ^[0-9a-f]{48}$ ]]; then
+    ci_error "Could not read random bytes for the session login."
+    exit 1
+  fi
+  ci_mask "$GENERATED_PASSWORD"
+fi
+
 # Per-session state (the .env backup, markers, the URL file) lives outside the
 # repository checkout.
 STATE_DIR="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/via-cicd-${NAME}"
@@ -234,6 +249,8 @@ ci_set_output "project_dir" "${PROJECT_DIR}"
 ci_set_output "timeout_minutes" "${TIMEOUT}"
 ci_set_output "cli_version" "${CLI_VERSION}"
 ci_set_output "state_dir" "${STATE_DIR}"
+# Masked above; a step output of this composite only (never declared).
+ci_set_output "generated_password" "${GENERATED_PASSWORD}"
 
 echo "Session: ${NAME} (interface: ${INTERFACE}, mode: ${MODE}, services to expose: ${EXPOSE_COUNT})"
 

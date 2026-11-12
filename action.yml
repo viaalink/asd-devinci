@@ -145,7 +145,7 @@ runs:
         xdg-config-home: ${{ steps.credentials.outputs.state_dir }}/cli/config
         workspace-dir: ${{ steps.credentials.outputs.project_dir }}/workspace
         username: ${{ inputs.username }}
-        password: ${{ inputs.password }}
+        password: ${{ inputs.password || steps.credentials.outputs.generated_password }}
         token: ${{ github.token }}
 
     - name: Install the Viaalink CLI (Linux/macOS)
@@ -192,17 +192,17 @@ runs:
         SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
         SESSION_INTERFACE: ${{ steps.credentials.outputs.interface }}
         SESSION_USERNAME: ${{ inputs.username }}
-        SESSION_PASSWORD: ${{ inputs.password }}
+        SESSION_PASSWORD: ${{ inputs.password || steps.credentials.outputs.generated_password }}
         SESSION_SHELL: ${{ inputs.shell }}
         # The login as real step env too, so the CLI never depends on
         # reading it back from .env (its .env autoload).
         VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
-        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
+        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password || steps.credentials.outputs.generated_password }}
         VIA_TTYD_USERNAME: ${{ inputs.username }}
-        VIA_TTYD_PASSWORD: ${{ inputs.password }}
+        VIA_TTYD_PASSWORD: ${{ inputs.password || steps.credentials.outputs.generated_password }}
         VIA_TTYD_SHELL_CMD: ${{ inputs.shell }}
         VIA_CODESERVER_AUTH: password
-        VIA_CODESERVER_PASSWORD: ${{ inputs.password }}
+        VIA_CODESERVER_PASSWORD: ${{ inputs.password || steps.credentials.outputs.generated_password }}
         VIA_NON_INTERACTIVE: '1'
         VIA_WORKSPACE_DIR: ${{ steps.credentials.outputs.project_dir || github.workspace }}/workspace
 
@@ -233,7 +233,7 @@ runs:
         VIA_TUNNEL_PORT: ${{ inputs.tunnel-port }}
         VIA_TUNNEL_HOST_KEY_FINGERPRINTS: ${{ inputs.tunnel-host-key-fingerprints }}
         VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
-        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
+        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password || steps.credentials.outputs.generated_password }}
         VIA_NON_INTERACTIVE: '1'
         VIA_WORKSPACE_DIR: ${{ steps.credentials.outputs.project_dir || github.workspace }}/workspace
         GITHUB_TOKEN: ${{ github.token }}
@@ -271,7 +271,7 @@ runs:
         VIA_TUNNEL_PORT: ${{ inputs.tunnel-port }}
         VIA_TUNNEL_HOST_KEY_FINGERPRINTS: ${{ inputs.tunnel-host-key-fingerprints }}
         VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
-        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
+        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password || steps.credentials.outputs.generated_password }}
         VIA_NON_INTERACTIVE: '1'
         VIA_WORKSPACE_DIR: ${{ steps.credentials.outputs.project_dir || github.workspace }}/workspace
 
@@ -292,7 +292,7 @@ runs:
         # The login as real env, as in the steps before: via expose stop
         # must not depend on the compiled binary's .env load.
         VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
-        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
+        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password || steps.credentials.outputs.generated_password }}
         VIA_NON_INTERACTIVE: '1'
         VIA_WORKSPACE_DIR: ${{ steps.credentials.outputs.project_dir || github.workspace }}/workspace
         GITHUB_TOKEN: ${{ github.token }}
@@ -319,7 +319,7 @@ runs:
         SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
         DEPLOY_ID: ${{ steps.connect.outputs.deploy_id }}
         VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
-        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
+        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password || steps.credentials.outputs.generated_password }}
         VIA_NON_INTERACTIVE: '1'
         VIA_WORKSPACE_DIR: ${{ steps.credentials.outputs.project_dir || github.workspace }}/workspace
         GITHUB_TOKEN: ${{ github.token }}
