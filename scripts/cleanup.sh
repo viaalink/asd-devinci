@@ -310,6 +310,16 @@ cleanup_session() {
     return 0
   fi
 
+  # This session's own CLI (install-cli.sh: <state>/cli/bin, on Windows
+  # <state>/cli/home/bin; VIA_HOME <state>/cli/home): with two sessions in
+  # one job the job's PATH may lead to the other session's CLI.
+  local d
+  for d in "$state/cli/home/bin" "$state/cli/bin"; do
+    if [ -d "$d" ]; then PATH="$d:$PATH"; fi
+  done
+  export PATH
+  if [ -d "$state/cli/home" ]; then export VIA_HOME="$state/cli/home"; fi
+
   local did=0
 
   # Who ends the session, written before the first part: see the header.

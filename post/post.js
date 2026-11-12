@@ -22,10 +22,29 @@ function bashPath() {
 
 const scriptsDir = input("scripts-dir");
 const projectDir = input("project-dir");
+const stateDir = input("state-dir");
+
+// This session's own CLI, never another one's: with two sessions in one job
+// the job's PATH and VIA_HOME point at the CLI the last session installed
+// (maybe another cli-version). install-cli.sh/.ps1 put it in
+// <state-dir>/cli: bin/ (Linux/macOS) or home/bin/ (Windows), home = VIA_HOME.
+const cliDirs = [path.join(stateDir, "cli", "bin"), path.join(stateDir, "cli", "home", "bin")].filter((d) =>
+  fs.existsSync(d),
+);
+const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") || "PATH";
+const ownCli = {};
+if (cliDirs.length > 0) {
+  ownCli[pathKey] = [...cliDirs, process.env[pathKey] || ""].join(path.delimiter);
+}
+if (fs.existsSync(path.join(stateDir, "cli", "home"))) {
+  ownCli.VIA_HOME = path.join(stateDir, "cli", "home");
+}
+
 const env = {
   ...process.env,
+  ...ownCli,
   SCRIPTS_DIR: scriptsDir,
-  STATE_DIR: input("state-dir"),
+  STATE_DIR: stateDir,
   SESSION_NAME: input("session-name"),
   XDG_CONFIG_HOME: input("xdg-config-home"),
   VIA_WORKSPACE_DIR: input("workspace-dir"),

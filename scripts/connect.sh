@@ -50,7 +50,7 @@ fi
 # open; the session is ended (the trap) instead of handed out.
 CODE=$(login_probe "$URL")
 if [ "$CODE" != "401" ]; then
-  ci_error "The ${SESSION_INTERFACE} was published, but its address answers HTTP ${CODE} without a login instead of 401. It is taken down again: the action never leaves it open."
+  ci_error "The ${SESSION_INTERFACE} was published, but a request without credentials gets HTTP ${CODE}, not 401 with the login's Basic challenge. It is taken down again: the action never leaves it open."
   exit 1
 fi
 echo "Login in front checked: HTTP 401 without credentials."

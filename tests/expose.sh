@@ -75,15 +75,24 @@ EOF
   cat > "$t/bin/curl" <<'EOF'
 #!/bin/bash
 url="${*: -1}"; host="${url#https://}"; n="${host%%-ci.*}"
+hdrfile=""; prev=""; for a in "$@"; do [ "$prev" = "-D" ] && hdrfile="$a"; prev="$a"; done
+emit() {  # $1 = status, $2 = "basic" when the login challenges
+  if [ -n "$hdrfile" ]; then
+    { printf 'HTTP/2 %s\r\n' "$1"; [ "${2:-}" = basic ] && printf 'www-authenticate: Basic realm="restricted"\r\n'; printf '\r\n'; } > "$hdrfile"
+  fi
+  printf '%s' "$1"
+}
 if [ -f "$FAKE/exposed.d/$n" ] || { [ "$n" = demo ] && [ -f "$FAKE/exposed" ]; }; then
   creds=0; for a in "$@"; do [ "$a" = "-u" ] && creds=1; done
   if [ "$(cat "$FAKE/auth-$n" 2>/dev/null)" = "--auth=basic" ] && [ "$creds" = 0 ] && [ ! -f "$FAKE/fail-open" ]; then
-    printf 401
+    emit 401 basic
+  elif [ -f "$FAKE/app-401" ]; then
+    emit 401          # the app's own 401, no Basic challenge
   else
-    printf 200
+    emit 200
   fi
-elif [ -f "$FAKE/still-answers" ]; then printf 200
-else printf 404; fi
+elif [ -f "$FAKE/still-answers" ]; then emit 200
+else emit 404; fi
 EOF
   chmod +x "$t/bin/"*
 }
@@ -385,7 +394,7 @@ OUT12="$(cd "$T12/project" && FAKE="$T12/fake" PATH="$T12/bin:$PATH" STATE_DIR="
   SCRIPTS_DIR="$SCRIPTS" GITHUB_ACTIONS="" bash "$SCRIPTS/expose.sh" 2>&1)"; RC12=$?
 set -e
 check "the step fails" test "$RC12" -ne 0
-check "and says the login is missing" grep -q "shop was published, but answers HTTP 200 without a login instead of 401" <<<"$OUT12"
+check "and says the login is missing" grep -q "shop was published, but a request without credentials gets HTTP 200" <<<"$OUT12"
 check "shop is taken down" test ! -e "$T12/fake/exposed.d/shop-0123456789abcdef"
 check "and so is the rest of the session" test ! -e "$T12/fake/exposed.d/hooks-1111111111111111"
 check "a public service is not probed for a login" bash -c "! grep -q 'hooks was published, but' <<<\"\$1\"" _ "$OUT12"
@@ -408,7 +417,7 @@ OUT12C="$(cd "$T12C/repo" && FAKE="$T12C/fake" PATH="$T12C/bin:$PATH" STATE_DIR=
   SCRIPTS_DIR="$SCRIPTS" GITHUB_ACTIONS="" bash "$SCRIPTS/connect.sh" 2>&1)"; RC12C=$?
 set -e
 check "an open terminal fails the step" test "$RC12C" -ne 0
-check "with a clear message" grep -q "terminal was published, but its address answers HTTP 200 without a login" <<<"$OUT12C"
+check "with a clear message" grep -q "terminal was published, but a request without credentials gets HTTP 200" <<<"$OUT12C"
 check "and is taken down" test ! -e "$T12C/fake/exposed"
 check "no url output was written for it" bash -c "! grep -q 'url_base=' <<<\"\$1\"" _ "$OUT12C"
 
@@ -449,6 +458,57 @@ OUT14="$(cd "$T14" && FAKE="$T14/fake" PATH="$T14/bin:$PATH" STATE_DIR="$T14/sta
 check "a run warning, not a quiet line" grep -q "^::warning::https://hooks-1111111111111111-ci.relay.example.com still answers HTTP 200 after the exposure was stopped (404 expected)." <<<"$OUT14"
 
 rm -rf "$T10" "$T11" "$T12" "$T12B" "$T12C" "$T14"
+
+echo "# 15. Two sessions, two CLIs: each post step uses its own session's CLI"
+T15="$(mktemp -d)"
+make_stubs "$T15"
+P1="$T15/via-cicd-abcdef1-via1-aaaaaaaaaaaa"; P2="$T15/via-cicd-abcdef1-via2-bbbbbbbbbbbb"
+for st in "$P1" "$P2"; do
+  mkdir -p "$st/cli/bin" "$st/cli/home" "$st/project"
+  # The session's own CLI: says which one it is and its VIA_HOME, then acts.
+  cat > "$st/cli/bin/via" <<EOF
+#!/bin/bash
+echo "\$(basename "$st") VIA_HOME=\${VIA_HOME:-} via \$*" >> "\$FAKE/own-calls"
+exec "$T15/bin/via" "\$@"
+EOF
+  chmod +x "$st/cli/bin/via"
+done
+printf '8080\thooks\tpublic\thooks-1111111111111111\n' > "$P1/expose-spec"
+printf '8081\tapi\tpublic\tapi-2222222222222222\n' > "$P2/expose-spec"
+for st in "$P1" "$P2"; do
+  (cd "$st/project" && FAKE="$T15/fake" PATH="$st/cli/bin:$T15/bin:$PATH" STATE_DIR="$st" SESSION_NAME=abcdef1 \
+    SCRIPTS_DIR="$SCRIPTS" GITHUB_ACTIONS="" bash "$SCRIPTS/expose.sh" >/dev/null 2>&1)
+done
+: > "$T15/fake/own-calls"
+# The job's PATH and VIA_HOME after the second install: session 2's CLI first.
+JOB_PATH="$P2/cli/bin:$T15/bin:$PATH"
+for st in "$P2" "$P1"; do   # post steps run in reverse order
+  env FAKE="$T15/fake" PATH="$JOB_PATH" VIA_HOME="$P2/cli/home" GITHUB_ACTIONS="" "INPUT_STATE-DIR=$st" \
+    "INPUT_PROJECT-DIR=$st/project" "INPUT_SESSION-NAME=abcdef1" "INPUT_SCRIPTS-DIR=$SCRIPTS" \
+    node "$ROOT/post/post.js" >/dev/null 2>&1
+done
+check "session 1's service stopped by session 1's CLI" \
+  grep -qxF "$(basename "$P1") VIA_HOME=$P1/cli/home via expose stop hooks-1111111111111111" "$T15/fake/own-calls"
+check "session 2's service stopped by session 2's CLI" \
+  grep -qxF "$(basename "$P2") VIA_HOME=$P2/cli/home via expose stop api-2222222222222222" "$T15/fake/own-calls"
+check "session 2's CLI never ran session 1's cleanup" \
+  bash -c "! grep -q '^$(basename "$P2") .*hooks-1111' '$T15/fake/own-calls'"
+check "both addresses are gone" test -z "$(ls -A "$T15/fake/exposed.d")"
+
+echo "# 16. An app's own 401 is not the login"
+T16="$(mktemp -d)"
+make_stubs "$T16"; touch "$T16/fake/fail-open" "$T16/fake/app-401"
+mkdir -p "$T16/state" "$T16/project"
+printf '3000\tshop\tlogin\tshop-0123456789abcdef\n' > "$T16/state/expose-spec"
+set +e
+OUT16="$(cd "$T16/project" && FAKE="$T16/fake" PATH="$T16/bin:$PATH" STATE_DIR="$T16/state" SESSION_NAME=demo \
+  SCRIPTS_DIR="$SCRIPTS" GITHUB_ACTIONS="" bash "$SCRIPTS/expose.sh" 2>&1)"; RC16=$?
+set -e
+check "a 401 without a Basic challenge fails the step" test "$RC16" -ne 0
+check "and says so" grep -q "gets HTTP 401 without a Basic login challenge, not 401 with" <<<"$OUT16"
+check "and the service is taken down" test ! -e "$T16/fake/exposed.d/shop-0123456789abcdef"
+
+rm -rf "$T15" "$T16"
 
 rm -rf "$CRED_TEMP" "$CRED_TEMP2" "$T4" "$T4B" "$T5" "$T6" "$T7" "$T8" "$(dirname "$CANARY")"
 if [ "$FAILS" -gt 0 ]; then

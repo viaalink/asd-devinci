@@ -85,7 +85,7 @@ while IFS=$'\t' read -r port name auth published <&3; do
   if [ "$auth" != "public" ]; then
     code=$(login_probe "$url")
     if [ "$code" != "401" ]; then
-      ci_error "${name} was published, but answers HTTP ${code} without a login instead of 401. It is taken down again: a service without public is never left open."
+      ci_error "${name} was published, but a request without credentials gets HTTP ${code}, not 401 with the login's Basic challenge. It is taken down again: a service without public is never left open."
       exit 1
     fi
     echo "${name}: login in front checked (HTTP 401 without credentials)."
