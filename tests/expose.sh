@@ -426,6 +426,7 @@ for bad in $'https://x.example.com/\nEVIL=1' "https://x.example.com/path" "http:
   set -e
   check "refused: $(printf '%q' "$bad")" test "$RC13" -ne 0
   check "  nothing written to GITHUB_ENV / GITHUB_OUTPUT" test ! -s "$T13/env" -a ! -s "$T13/out"
+  check "  and says why" grep -q "is not a plain https URL; refusing to use it" <<<"$OUT13"
   rm -rf "$T13"
 done
 for good in "https://hooks-1a2b-ci.relay.example.com" "https://hooks.example.com/" "https://hooks.example.com:8443/"; do
