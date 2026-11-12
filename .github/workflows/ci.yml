@@ -15,6 +15,10 @@ jobs:
         run: shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh tests/*.sh
       - name: Cancel and cleanup (stub CLI)
         run: bash tests/cancel.sh
+      - name: Expose services (stub CLI)
+        run: bash tests/expose.sh
+      - name: Post-step helper parses
+        run: node --check post/main.js && node --check post/post.js
       - name: Validate action.yml
         run: |
-          python3 -c "import yaml, sys; yaml.safe_load(open('action.yml'))"
+          python3 -c "import yaml, sys; yaml.safe_load(open('action.yml')); yaml.safe_load(open('post/action.yml'))"

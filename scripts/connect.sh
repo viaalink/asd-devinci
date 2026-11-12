@@ -12,7 +12,8 @@ source "${SCRIPTS_DIR}/cleanup.sh"
 # VIA_BASIC_AUTH_*); SESSION_NAME, SESSION_TARGET, STATE_DIR come from earlier
 # steps' outputs. Returns once published; keepalive.sh holds the session.
 
-ci_group_start "Publishing through the relay"
+ci_group_start "Publishing the ${SESSION_INTERFACE} through the relay"
+if [ "$SESSION_INTERFACE" = "codeserver" ]; then SESSION_LABEL="VS Code"; else SESSION_LABEL="Terminal"; fi
 
 # On failure the keep-alive step never runs: end the session now.
 on_exit() {
@@ -52,21 +53,27 @@ ci_set_output "url" "${FULL_URL}"
 ci_set_output "url_base" "${URL}"
 
 LIMIT="until the run is cancelled or the job times out"
-if [ "$((10#${SESSION_TIMEOUT_MINUTES:-0}))" -gt 0 ]; then
+ENDS="Cancel the run to end it."
+if [ "${SESSION_MODE:-interactive}" = "background" ]; then
+  LIMIT="while the job runs"
+  ENDS="It ends with the job (the action's post step)."
+elif [ "$((10#${SESSION_TIMEOUT_MINUTES:-0}))" -gt 0 ]; then
   LIMIT="for up to $((10#${SESSION_TIMEOUT_MINUTES})) minutes"
 fi
 ci_set_summary "$(cat << EOF2
-## Terminal session ready
+## ${SESSION_LABEL:-Session} ready
 
 **[${URL}](${URL})** (sign in as \`${VIA_BASIC_AUTH_USERNAME}\`)
 
-Open ${LIMIT}. Cancel the run to end it.
+Open ${LIMIT}. ${ENDS}
 EOF2
 )"
 
 # GitHub: a "View deployment" button (needs deployments: write; skipped
 # without it). Passed on as a step output; the cleanup marks it inactive.
-ci_create_deployment "ci-terminal" "Viaalink CI Terminal ${SESSION_INTERFACE} session" "${URL}"
+ci_create_deployment "via-cicd" "Viaalink CI/CD ${SESSION_INTERFACE} session" "${URL}"
 ci_set_output "deploy_id" "${DEPLOY_ID:-}"
+# The post step (background mode) has no step output to read it from.
+if [ -n "${DEPLOY_ID:-}" ]; then echo "$DEPLOY_ID" > "${STATE_DIR}/deploy-id"; fi
 
 ci_group_end

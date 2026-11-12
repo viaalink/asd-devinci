@@ -1,0 +1,41 @@
+# Internal to Viaalink CI/CD: not meant to be used on its own.
+#
+# A composite action has no post step of its own, but the post step of an
+# action it uses runs at the end of the job, also when the job failed or was
+# cancelled. In background mode the main action stages this directory next
+# to the checkout and uses it, so the session ends with the job.
+name: 'Viaalink CI/CD: end the session at job end'
+description: 'Internal helper of Viaalink CI/CD: its post step ends a background session'
+inputs:
+  state-dir:
+    description: 'Session state directory'
+    required: true
+  project-dir:
+    description: 'Directory the CLI ran in'
+    required: true
+  session-name:
+    description: 'Session name'
+    required: true
+  scripts-dir:
+    description: "The main action's scripts directory"
+    required: true
+  xdg-config-home:
+    description: "The session's CLI config directory"
+    required: true
+  workspace-dir:
+    description: "The CLI's workspace directory"
+    required: true
+  username:
+    description: 'Login username'
+    default: ''
+  password:
+    description: 'Login password'
+    default: ''
+  token:
+    description: 'GitHub token (marks the deployment inactive)'
+    default: ''
+runs:
+  using: 'node24'
+  main: 'main.js'
+  post: 'post.js'
+  post-if: 'always()'

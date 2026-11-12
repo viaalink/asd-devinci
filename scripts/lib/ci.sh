@@ -265,7 +265,7 @@ ci_create_deployment() {
           -d "{
             \"state\": \"success\",
             \"environment_url\": \"${url}\",
-            \"description\": \"Viaalink CI Terminal session ready\"
+            \"description\": \"Viaalink CI/CD session ready\"
           }" > /dev/null 2>&1 || true
         echo "Deployment created: View deployment button now visible"
       else

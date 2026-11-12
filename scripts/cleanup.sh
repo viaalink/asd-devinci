@@ -13,10 +13,11 @@
 #
 #   STATE_DIR      per-session state (credentials.sh)
 #   SESSION_NAME   the published name
-#   DEPLOY_ID      GitHub deployment to mark inactive (optional)
+#   DEPLOY_ID      GitHub deployment to mark inactive (optional; else
+#                  STATE_DIR/deploy-id, which the post step relies on)
 #   CLEANUP_BY     who calls, for the log ("keep-alive (cancelled)", ...)
 #
-# Markers: exposed, interface (terminal|codeserver), caddy-before,
+# Markers: exposed, exposures (+ exposure-urls), interface (terminal|codeserver), caddy-before,
 # caddy-started,
 # env-seeded (+ env.backup), checkout-noted (+ checkout/), stop-failed,
 # tunnel-url.txt. Who ends it: ending, ended.
@@ -287,7 +288,7 @@ cleanup_session() {
     cleanup_log "Nothing to do: ${state} does not exist (the session never got past the credentials step)."
     return 0
   fi
-  if [ -f "$state/ended" ] && [ ! -f "$state/exposed" ] && [ ! -f "$state/interface" ] \
+  if [ -f "$state/ended" ] && [ ! -f "$state/exposed" ] && [ ! -f "$state/exposures" ] && [ ! -f "$state/interface" ] \
      && [ ! -f "$state/caddy-started" ] && [ ! -f "$state/env-seeded" ] \
      && [ ! -f "$state/checkout-noted" ]; then
     cleanup_log "Nothing left to do: the session was already ended by $(cat "$state/ended")."
@@ -297,7 +298,7 @@ cleanup_session() {
   local did=0
 
   # Who ends the session, written before the first part: see the header.
-  if [ ! -f "$state/ending" ] && { [ -f "$state/exposed" ] || [ -f "$state/interface" ] \
+  if [ ! -f "$state/ending" ] && { [ -f "$state/exposed" ] || [ -f "$state/exposures" ] || [ -f "$state/interface" ] \
      || [ -f "$state/caddy-started" ] || [ -f "$state/env-seeded" ] \
      || [ -f "$state/checkout-noted" ]; }; then
     echo "${by} at $(date -u '+%H:%M:%S UTC')" > "$state/ending"
@@ -331,6 +332,44 @@ cleanup_session() {
       cleanup_log "The relay now answers HTTP ${code:-000} for the session address (401 while it was published)."
     fi
     rm -f "$state/exposed"
+  fi
+
+  # 1b. The services of the expose input (expose.sh), one by one. A name
+  #     leaves the marker file once it is stopped, so a cleanup killed half
+  #     way leaves only the rest to the next caller.
+  if [ -f "$state/exposures" ]; then
+    did=1
+    local name url code listed rest names
+    # Read first: the file is rewritten as names are stopped.
+    names=$(cat "$state/exposures")
+    while IFS= read -r name <&4; do
+      [ -n "$name" ] || continue
+      if via expose stop "$name" >/dev/null 2>&1 < /dev/null; then
+        cleanup_log "Stopped the exposure '${name}' (via expose stop)."
+      else
+        cleanup_log "via expose stop '${name}' failed; the relay drops the address when the runner disconnects."
+      fi
+      if command -v jq >/dev/null 2>&1; then
+        listed=$(via expose list --json 2>/dev/null < /dev/null | jq -r --arg n "$name" \
+          'first(.exposed[]? | select(.id == $n or .name == $n) | .id) // empty' 2>/dev/null || true)
+        if [ -n "$listed" ]; then
+          cleanup_log "Warning: '${name}' is still in via expose list."
+        else
+          cleanup_log "'${name}' is no longer in via expose list."
+        fi
+      fi
+      url=""
+      if [ -f "$state/exposure-urls" ]; then
+        url=$(awk -F '\t' -v n="$name" '$1 == n { print $2; exit }' "$state/exposure-urls")
+      fi
+      if [ -n "$url" ] && command -v curl >/dev/null 2>&1; then
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url" 2>/dev/null || true)
+        cleanup_log "The relay now answers HTTP ${code:-000} for ${url}."
+      fi
+      rest=$(grep -vxF -- "$name" "$state/exposures" || true)
+      if [ -n "$rest" ]; then printf '%s\n' "$rest" > "$state/exposures"; else : > "$state/exposures"; fi
+    done 4<<< "$names"
+    rm -f "$state/exposures" "$state/exposure-urls"
   fi
 
   # 2. The interface started by start-interface.sh.
@@ -399,10 +438,15 @@ cleanup_session() {
   fi
 
   # 6. The deployment button.
-  if [ -n "${DEPLOY_ID:-}" ] && command -v ci_deactivate_deployment >/dev/null 2>&1; then
-    ci_deactivate_deployment "${DEPLOY_ID}"
-    cleanup_log "Marked deployment ${DEPLOY_ID} inactive."
+  local deploy_id="${DEPLOY_ID:-}"
+  if [ -z "$deploy_id" ] && [ -f "$state/deploy-id" ]; then
+    deploy_id=$(cat "$state/deploy-id")
   fi
+  if [ -n "$deploy_id" ] && command -v ci_deactivate_deployment >/dev/null 2>&1; then
+    ci_deactivate_deployment "${deploy_id}"
+    cleanup_log "Marked deployment ${deploy_id} inactive."
+  fi
+  rm -f "$state/deploy-id"
 
   rm -f "$state/tunnel-url.txt"
   if [ "$did" -eq 0 ] && [ -f "$state/ending" ]; then

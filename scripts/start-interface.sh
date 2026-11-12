@@ -23,7 +23,7 @@ trap on_exit EXIT
 # login also reaches this step as step env (VIA_BASIC_AUTH_*, VIA_TTYD_*,
 # VIA_CODESERVER_*), so the CLI does not depend on reading it back from .env.
 
-ci_group_start "Starting the session interface (${SESSION_INTERFACE})"
+ci_group_start "Preparing the session (interface: ${SESSION_INTERFACE})"
 
 # A .env value, double-quoted with \ " $ ` escaped: the CLI's .env reader and
 # bash `source` both read back exactly what was written.
@@ -54,12 +54,18 @@ if [ -f .env ]; then
 fi
 touch "${STATE_DIR}/env-seeded"
 note_caddy_before
+# With interface: none and only public services there is no password: no
+# login lines then.
 {
-  echo "ASD_BASIC_AUTH_USERNAME=${SESSION_USERNAME}"
-  echo "ASD_BASIC_AUTH_PASSWORD=$(envq "$SESSION_PASSWORD")"
-  echo "ASD_TTYD_USERNAME=${SESSION_USERNAME}"
-  echo "ASD_TTYD_PASSWORD=$(envq "$SESSION_PASSWORD")"
-  echo "ASD_TTYD_SHELL_CMD=$(envq "$SESSION_SHELL")"
+  if [ -n "${SESSION_PASSWORD:-}" ]; then
+    echo "ASD_BASIC_AUTH_USERNAME=${SESSION_USERNAME}"
+    echo "ASD_BASIC_AUTH_PASSWORD=$(envq "$SESSION_PASSWORD")"
+  fi
+  if [ "$SESSION_INTERFACE" != "none" ]; then
+    echo "ASD_TTYD_USERNAME=${SESSION_USERNAME}"
+    echo "ASD_TTYD_PASSWORD=$(envq "$SESSION_PASSWORD")"
+    echo "ASD_TTYD_SHELL_CMD=$(envq "$SESSION_SHELL")"
+  fi
   if [ "$SESSION_INTERFACE" = "codeserver" ]; then
     echo "ASD_CODESERVER_AUTH=password"
     echo "ASD_CODESERVER_PASSWORD=$(envq "$SESSION_PASSWORD")"
@@ -67,6 +73,16 @@ note_caddy_before
 } >> .env
 chmod 600 .env
 via init --yes
+
+# interface: none starts no terminal and no VS Code: only Caddy (via expose
+# starts it) and the exposures, in expose.sh.
+if [ "$SESSION_INTERFACE" = "none" ]; then
+  ci_set_output "target" ""
+  ci_set_output "port" ""
+  echo "Interface: none (expose only)"
+  ci_group_end
+  exit 0
+fi
 
 echo "${SESSION_INTERFACE}" > "${STATE_DIR}/interface"
 

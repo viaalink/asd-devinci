@@ -1,9 +1,9 @@
-name: 'Viaalink CI Terminal'
-description: 'A browser terminal or VS Code on your CI runner, published through your own Viaalink Relay, behind a login'
+name: 'Viaalink CI/CD'
+description: 'A browser terminal, VS Code and public URLs for your services during a CI/CD job, through your own Viaalink Relay'
 author: 'Viaalink'
 
 branding:
-  icon: 'code'
+  icon: 'globe'
   color: 'purple'
 
 # Secrets: `via gh setup` stores them in the repository; `via auth export`
@@ -37,12 +37,26 @@ inputs:
     default: 'via'
 
   password:
-    description: 'Login password. Secret VIA_TERMINAL_PASSWORD.'
-    required: true
+    description: 'Login password. Secret VIA_TERMINAL_PASSWORD. Needed for the terminal, VS Code and every exposed service without public.'
+    required: false
+    default: ''
 
   interface:
-    description: 'terminal (ttyd, a web terminal) or codeserver (VS Code in the browser)'
+    description: 'terminal (ttyd, a web terminal), codeserver (VS Code in the browser) or none (only the services in expose)'
     default: 'terminal'
+
+  expose:
+    description: |
+      Services running in the job to publish on temporary addresses, one per line:
+        <port> <name>          behind the login (username and password)
+        <port> <name> public   no login, for senders that cannot log in (webhooks)
+      Names: 1-32 lowercase letters, digits and inner hyphens; at most 10 services.
+      Each address gets a random part per run.
+    default: ''
+
+  mode:
+    description: 'interactive: the step holds the job until it is cancelled or times out. background: the step returns once everything is published, later steps use the addresses, and the session ends with the job.'
+    default: 'interactive'
 
   shell:
     description: 'Shell of the terminal: bash, zsh or powershell'
@@ -57,7 +71,7 @@ inputs:
     default: ''
 
   timeout-minutes:
-    description: 'End the session after this many minutes (0 = when the run is cancelled or the job times out)'
+    description: 'mode interactive: end the session after this many minutes (0 = when the run is cancelled or the job times out)'
     default: '0'
 
 outputs:
@@ -72,6 +86,10 @@ outputs:
   session-name:
     description: 'Name the session was published under'
     value: ${{ steps.credentials.outputs.session_name }}
+
+  urls:
+    description: 'The exposed services as JSON, name -> address (no login in it): fromJSON(steps.<id>.outputs.urls).<name>'
+    value: ${{ steps.expose.outputs.urls }}
 
   local-port:
     description: "Port of the interface on the runner (empty when the terminal listens on a socket: Linux and macOS)"
@@ -102,7 +120,33 @@ runs:
         # this pin lives; the install steps take the resolved value.
         DEFAULT_CLI_VERSION: 'v3.2.6-nightly.20261109T1503'
         INPUT_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+        INPUT_EXPOSE: ${{ inputs.expose }}
+        INPUT_MODE: ${{ inputs.mode }}
         GITHUB_SHA: ${{ github.sha }}
+
+    # Background mode: the session ends in the post step of a helper action
+    # (a composite action has no post step of its own). Registered before
+    # anything starts, so a failure in a later step is cleaned up too.
+    - name: Prepare the end of the session (job end)
+      if: steps.credentials.outputs.mode == 'background'
+      shell: bash
+      run: bash "${SCRIPTS_DIR}/stage-post.sh"
+      env:
+        SCRIPTS_DIR: ${{ github.action_path }}/scripts
+
+    - name: End the session at job end
+      if: steps.credentials.outputs.mode == 'background'
+      uses: ./../.via-cicd-post
+      with:
+        state-dir: ${{ steps.credentials.outputs.state_dir }}
+        project-dir: ${{ steps.credentials.outputs.project_dir }}
+        session-name: ${{ steps.credentials.outputs.session_name }}
+        scripts-dir: ${{ github.action_path }}/scripts
+        xdg-config-home: ${{ steps.credentials.outputs.state_dir }}/cli/config
+        workspace-dir: ${{ steps.credentials.outputs.project_dir }}/workspace
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+        token: ${{ github.token }}
 
     - name: Install the Viaalink CLI (Linux/macOS)
       if: runner.os != 'Windows'
@@ -134,9 +178,10 @@ runs:
         REQUESTED_VERSION: ${{ steps.credentials.outputs.cli_version }}
         GITHUB_TOKEN: ${{ github.token }}
 
-    - name: Start the interface
+    - name: Prepare the session
       id: interface
       shell: bash
+      working-directory: ${{ steps.credentials.outputs.project_dir }}
       run: bash "${SCRIPTS_DIR}/start-interface.sh"
       env:
         # The CLI's config directory (relay registry) is the session's own, for
@@ -159,13 +204,15 @@ runs:
         VIA_CODESERVER_AUTH: password
         VIA_CODESERVER_PASSWORD: ${{ inputs.password }}
         VIA_NON_INTERACTIVE: '1'
-        VIA_WORKSPACE_DIR: ${{ github.workspace }}/workspace
+        VIA_WORKSPACE_DIR: ${{ steps.credentials.outputs.project_dir || github.workspace }}/workspace
 
     # Publishes the session and returns; the tunnel keeps running for the
     # rest of the job. The URL is read back from the CLI, never assembled.
-    - name: Publish through the relay
+    - name: Publish the terminal or VS Code
       id: connect
+      if: steps.credentials.outputs.interface != 'none'
       shell: bash
+      working-directory: ${{ steps.credentials.outputs.project_dir }}
       run: bash "${SCRIPTS_DIR}/connect.sh"
       env:
         # The CLI's config directory (relay registry) is the session's own, for
@@ -176,6 +223,7 @@ runs:
         SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
         SESSION_INTERFACE: ${{ steps.credentials.outputs.interface }}
         SESSION_TIMEOUT_MINUTES: ${{ steps.credentials.outputs.timeout_minutes }}
+        SESSION_MODE: ${{ steps.credentials.outputs.mode }}
         SESSION_TARGET: ${{ steps.interface.outputs.target }}
         # The relay key, host key pins and login as VIA_* step env (the CLI
         # reads the VIA_* names from 3.2.0 on; credentials.sh refuses older).
@@ -187,7 +235,7 @@ runs:
         VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
         VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
         VIA_NON_INTERACTIVE: '1'
-        VIA_WORKSPACE_DIR: ${{ github.workspace }}/workspace
+        VIA_WORKSPACE_DIR: ${{ steps.credentials.outputs.project_dir || github.workspace }}/workspace
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_SHA: ${{ github.sha }}
@@ -195,6 +243,7 @@ runs:
     # `via gh terminal` reads tunnel-url.txt from this artifact. The name
     # carries the session name, so two sessions in one run do not collide.
     - name: Upload tunnel URL
+      if: steps.credentials.outputs.interface != 'none'
       uses: actions/upload-artifact@v4
       with:
         name: tunnel-url-${{ steps.credentials.outputs.session_name }}
@@ -202,8 +251,34 @@ runs:
         if-no-files-found: error
         retention-days: 1
 
-    - name: Keep session alive
+    # The services of the expose input. Their addresses go to the `urls`
+    # output and to VIAALINK_URL_<NAME> for the rest of the job.
+    - name: Expose services
+      id: expose
+      if: steps.credentials.outputs.expose_count != '0'
       shell: bash
+      working-directory: ${{ steps.credentials.outputs.project_dir }}
+      run: bash "${SCRIPTS_DIR}/expose.sh"
+      env:
+        XDG_CONFIG_HOME: ${{ steps.credentials.outputs.state_dir }}/cli/config
+        SCRIPTS_DIR: ${{ github.action_path }}/scripts
+        STATE_DIR: ${{ steps.credentials.outputs.state_dir }}
+        SESSION_NAME: ${{ steps.credentials.outputs.session_name }}
+        SESSION_MODE: ${{ steps.credentials.outputs.mode }}
+        VIA_TUNNEL_KEY: ${{ inputs.tunnel-key }}
+        VIA_TUNNEL_KEY_ID: ${{ inputs.tunnel-key-id }}
+        VIA_TUNNEL_HOST: ${{ inputs.tunnel-host }}
+        VIA_TUNNEL_PORT: ${{ inputs.tunnel-port }}
+        VIA_TUNNEL_HOST_KEY_FINGERPRINTS: ${{ inputs.tunnel-host-key-fingerprints }}
+        VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
+        VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
+        VIA_NON_INTERACTIVE: '1'
+        VIA_WORKSPACE_DIR: ${{ steps.credentials.outputs.project_dir || github.workspace }}/workspace
+
+    - name: Keep session alive
+      if: steps.credentials.outputs.mode != 'background'
+      shell: bash
+      working-directory: ${{ steps.credentials.outputs.project_dir }}
       run: exec bash "${SCRIPTS_DIR}/keepalive.sh"
       env:
         # The CLI's config directory (relay registry) is the session's own, for
@@ -219,18 +294,21 @@ runs:
         VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
         VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
         VIA_NON_INTERACTIVE: '1'
-        VIA_WORKSPACE_DIR: ${{ github.workspace }}/workspace
+        VIA_WORKSPACE_DIR: ${{ steps.credentials.outputs.project_dir || github.workspace }}/workspace
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
 
-    # Runs whatever the steps above could not: stop the exposure, the
+    # Runs whatever the steps above could not: stop the exposures, the
     # interface and the Caddy this action started, restore (or remove) .env,
     # take back what via init added to the checkout (.env backups, .gitignore
     # lines, workspace/, the CLI's runtime state folder), mark the deployment
     # inactive. Logs each thing it does, or why there was nothing left to do.
+    # Background mode: only when a step above failed or the run was
+    # cancelled; otherwise the session stays up until the post step.
     - name: End the session
-      if: always()
+      if: always() && (steps.credentials.outputs.mode != 'background' || failure() || cancelled())
       shell: bash
+      working-directory: ${{ steps.credentials.outputs.project_dir || github.workspace }}
       run: bash "${SCRIPTS_DIR}/cleanup.sh"
       env:
         # The CLI's config directory (relay registry) is the session's own, for
@@ -243,6 +321,6 @@ runs:
         VIA_BASIC_AUTH_USERNAME: ${{ inputs.username }}
         VIA_BASIC_AUTH_PASSWORD: ${{ inputs.password }}
         VIA_NON_INTERACTIVE: '1'
-        VIA_WORKSPACE_DIR: ${{ github.workspace }}/workspace
+        VIA_WORKSPACE_DIR: ${{ steps.credentials.outputs.project_dir || github.workspace }}/workspace
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}

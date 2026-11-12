@@ -28,8 +28,8 @@ if (-not $env:STATE_DIR) {
   Write-Output "::error::No session state directory: the credentials step did not run."
   exit 1
 }
-# STATE_DIR comes from Git Bash as RUNNER_TEMP + "/ci-terminal-<name>"
-# (D:\a\_temp/ci-terminal-x): one form with backslashes for PATH and the env.
+# STATE_DIR comes from Git Bash as RUNNER_TEMP + "/via-cicd-<name>"
+# (D:\a\_temp/via-cicd-x): one form with backslashes for PATH and the env.
 $stateDir = [IO.Path]::GetFullPath($env:STATE_DIR)
 $cliHome = [IO.Path]::GetFullPath((Join-Path $stateDir "cli\home"))
 $cliBin = Join-Path $cliHome "bin"

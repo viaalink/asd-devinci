@@ -11,6 +11,9 @@ source "${SCRIPTS_DIR}/lib/ci.sh"
 
 ci_group_start "Checking relay credentials"
 
+# Byte-wise character ranges: [a-z] is only a to z.
+LC_ALL=C
+
 # --- Masks, before any CLI step runs -------------------------------------
 # GitHub masks secrets.* already; this also covers values passed another way
 # and the encoded forms the CLI may put in a URL (user:pass@host).
@@ -31,7 +34,6 @@ missing=""
 [ -n "${INPUT_TUNNEL_KEY_ID:-}" ] || missing="$missing tunnel-key-id (VIA_TUNNEL_KEY_ID)"
 [ -n "${INPUT_TUNNEL_HOST:-}" ] || missing="$missing tunnel-host (VIA_TUNNEL_HOST)"
 [ -n "${INPUT_HOST_KEY_FINGERPRINTS:-}" ] || missing="$missing tunnel-host-key-fingerprints (VIA_TUNNEL_HOST_KEY_FINGERPRINTS)"
-[ -n "${INPUT_PASSWORD:-}" ] || missing="$missing password (VIA_TERMINAL_PASSWORD)"
 if [ -n "$missing" ]; then
   ci_error "Missing inputs:${missing}. Run 'via gh setup' in this repository on a device enrolled on your relay; it stores these as repository secrets. Then pass them as \${{ secrets.VIA_* }}."
   exit 1
@@ -48,16 +50,6 @@ if ! [[ "${INPUT_USERNAME:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then
   ci_error "The username input may hold only letters, digits, dots, underscores and hyphens."
   exit 1
 fi
-case "$INPUT_PASSWORD" in
-  *$'\n'*|*$'\r'*)
-    ci_error "The password holds a line break, which a .env value cannot. Store another one (via gh setup)."
-    exit 1
-    ;;
-esac
-if [[ "$INPUT_PASSWORD" =~ ^[[:space:]]*$ ]]; then
-  ci_error "The password is only whitespace. Store another one (via gh setup)."
-  exit 1
-fi
 case "${INPUT_SHELL:-bash}" in
   bash|zsh|powershell) ;;
   *)
@@ -66,10 +58,23 @@ case "${INPUT_SHELL:-bash}" in
     ;;
 esac
 
-case "${INPUT_INTERFACE:-terminal}" in
-  terminal|codeserver) ;;
+INTERFACE="${INPUT_INTERFACE:-terminal}"
+case "$INTERFACE" in
+  terminal|codeserver|none) ;;
   *)
-    ci_error "interface must be terminal or codeserver."
+    ci_error "interface must be terminal, codeserver or none."
+    exit 1
+    ;;
+esac
+
+# interactive: the step holds the job until it is cancelled or times out.
+# background: the step returns once everything is published; the action's
+# post step ends it all when the job ends (also on failure and cancel).
+MODE="${INPUT_MODE:-interactive}"
+case "$MODE" in
+  interactive|background) ;;
+  *)
+    ci_error "mode must be interactive or background."
     exit 1
     ;;
 esac
@@ -98,6 +103,10 @@ if ! [[ "$TIMEOUT" =~ ^[0-9]{1,6}$ ]]; then
   exit 1
 fi
 TIMEOUT=$((10#$TIMEOUT))
+if [ "$MODE" = "background" ] && [ "$TIMEOUT" -gt 0 ]; then
+  ci_error "timeout-minutes applies to mode: interactive. In background mode everything ends with the job."
+  exit 1
+fi
 
 NAME="${INPUT_TUNNEL_NAME:-${GITHUB_SHA:0:7}}"
 if ! [[ "$NAME" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
@@ -105,20 +114,127 @@ if ! [[ "$NAME" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
   exit 1
 fi
 
+# --- Services to expose ---------------------------------------------------
+# One per line: <port> <name> [login|public]. Blank lines and # comments are
+# skipped. Parsed with `read` (no eval, no globbing); every field is checked
+# against a fixed pattern before it is used. Errors name the line number,
+# never its content.
+EXPOSE_MAX=10
+EXPOSE_SPEC=""
+EXPOSE_COUNT=0
+NEEDS_LOGIN=0
+[ "$INTERFACE" = "none" ] || NEEDS_LOGIN=1
+SEEN_NAMES=" "
+lineno=0
+while IFS= read -r line || [ -n "$line" ]; do
+  lineno=$((lineno + 1))
+  line="${line%$'\r'}"
+  line="${line%%#*}"
+  # Tabs count as spaces; anything but a-z, 0-9, hyphens and spaces is refused.
+  line="${line//$'\t'/ }"
+  [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+  if ! [[ "$line" =~ ^[a-z0-9\ -]+$ ]]; then
+    ci_error "expose line ${lineno}: only lowercase letters, digits, hyphens and spaces are allowed (<port> <name> [login|public])."
+    exit 1
+  fi
+  port="" svc="" auth="" extra=""
+  read -r port svc auth extra <<< "$line"
+  if [ -n "$extra" ] || [ -z "$svc" ]; then
+    ci_error "expose line ${lineno}: write <port> <name> [login|public], e.g. 3000 shop or 8080 webhooks public."
+    exit 1
+  fi
+  if ! [[ "$port" =~ ^[0-9]{1,5}$ ]] || [ "$((10#$port))" -lt 1 ] || [ "$((10#$port))" -gt 65535 ]; then
+    ci_error "expose line ${lineno}: the port must be a number from 1 to 65535."
+    exit 1
+  fi
+  port=$((10#$port))
+  # A DNS label part: the published host is <name>-<random>.
+  if ! [[ "$svc" =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]]; then
+    ci_error "expose line ${lineno}: the name must be 1 to 32 lowercase letters, digits and inner hyphens."
+    exit 1
+  fi
+  case "${auth:-login}" in
+    login) auth=login; NEEDS_LOGIN=1 ;;
+    public) ;;
+    *)
+      ci_error "expose line ${lineno}: the third word must be login (the default) or public."
+      exit 1
+      ;;
+  esac
+  if [[ "$SEEN_NAMES" == *" ${svc} "* ]]; then
+    ci_error "expose line ${lineno}: the name is used twice; each service needs its own."
+    exit 1
+  fi
+  SEEN_NAMES+="${svc} "
+  EXPOSE_COUNT=$((EXPOSE_COUNT + 1))
+  if [ "$EXPOSE_COUNT" -gt "$EXPOSE_MAX" ]; then
+    ci_error "expose lists more than ${EXPOSE_MAX} services."
+    exit 1
+  fi
+  # A random part per service and per run (64 bits): the address cannot be
+  # guessed from the name, and one leaked address does not give the others.
+  rand=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+  if ! [[ "$rand" =~ ^[0-9a-f]{16}$ ]]; then
+    ci_error "Could not read random bytes for the service addresses."
+    exit 1
+  fi
+  EXPOSE_SPEC+="${port}"$'\t'"${svc}"$'\t'"${auth}"$'\t'"${svc}-${rand}"$'\n'
+done <<< "${INPUT_EXPOSE:-}"
+
+if [ "$INTERFACE" = "none" ] && [ "$EXPOSE_COUNT" -eq 0 ]; then
+  ci_error "interface: none needs at least one service in expose."
+  exit 1
+fi
+
+# The password is the login in front of the terminal, VS Code and every
+# service exposed without `public`. Not needed when there is none of those.
+if [ "$NEEDS_LOGIN" -eq 1 ]; then
+  if [ -z "${INPUT_PASSWORD:-}" ]; then
+    ci_error "Missing input: password (VIA_TERMINAL_PASSWORD). The terminal, VS Code and services exposed without public have a login in front. Run 'via gh setup' in this repository, then pass it as \${{ secrets.VIA_TERMINAL_PASSWORD }}."
+    exit 1
+  fi
+fi
+if [ -n "${INPUT_PASSWORD:-}" ]; then
+  case "$INPUT_PASSWORD" in
+    *$'\n'*|*$'\r'*)
+      ci_error "The password holds a line break, which a .env value cannot. Store another one (via gh setup)."
+      exit 1
+      ;;
+  esac
+  if [[ "$INPUT_PASSWORD" =~ ^[[:space:]]*$ ]]; then
+    ci_error "The password is only whitespace. Store another one (via gh setup)."
+    exit 1
+  fi
+fi
+
 # Per-session state (the .env backup, markers, the URL file) lives outside the
 # repository checkout.
-STATE_DIR="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ci-terminal-${NAME}"
+STATE_DIR="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/via-cicd-${NAME}"
 rm -rf "$STATE_DIR"
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
+printf '%s' "$EXPOSE_SPEC" > "${STATE_DIR}/expose-spec"
+
+# Where the CLI runs (via init, .env, its state): the checkout when there is
+# a terminal or VS Code to open in it; with interface: none a directory of
+# the session's own, so the checkout is never touched.
+if [ "$INTERFACE" = "none" ]; then
+  PROJECT_DIR="${STATE_DIR}/project"
+  mkdir -p "$PROJECT_DIR"
+else
+  PROJECT_DIR="${GITHUB_WORKSPACE:-$PWD}"
+fi
 
 # Step outputs, not job env: nothing of this leaks into the caller's steps.
 ci_set_output "session_name" "${NAME}"
-ci_set_output "interface" "${INPUT_INTERFACE:-terminal}"
+ci_set_output "interface" "${INTERFACE}"
+ci_set_output "mode" "${MODE}"
+ci_set_output "expose_count" "${EXPOSE_COUNT}"
+ci_set_output "project_dir" "${PROJECT_DIR}"
 ci_set_output "timeout_minutes" "${TIMEOUT}"
 ci_set_output "cli_version" "${CLI_VERSION}"
 ci_set_output "state_dir" "${STATE_DIR}"
 
-echo "Session: ${NAME} (${INPUT_INTERFACE:-terminal})"
+echo "Session: ${NAME} (interface: ${INTERFACE}, mode: ${MODE}, services to expose: ${EXPOSE_COUNT})"
 
 ci_group_end
