@@ -337,7 +337,7 @@ The session works the same on self-hosted runners: choose `self-hosted` as the o
 | `mode` | `interactive` (the step holds the job) or `background` (the step returns; the session ends with the job) | `interactive` |
 | `shell` | `bash`, `zsh` or `powershell` | `bash` |
 | `tunnel-name` | Name of the session, the first label of its hostname | short commit SHA |
-| `cli-version` | Viaalink CLI: `latest`, a release tag or a nightly tag. `latest` works once the next CLI release after 3.2.6 is out; until then empty (the default) installs the first build this action works with | empty |
+| `cli-version` | Viaalink CLI: `latest`, a release tag or a nightly tag. Empty (the default) installs `latest`, the newest release | empty |
 | `timeout-minutes` | Interactive mode: end the session after this many minutes (0 = at cancel or job timeout) | `0` |
 
 ## Outputs

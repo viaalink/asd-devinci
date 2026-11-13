@@ -67,7 +67,7 @@ inputs:
     default: ''
 
   cli-version:
-    description: 'Viaalink CLI to install: latest, a release tag (vX.Y.Z) or a nightly tag (vX.Y.Z-nightly.YYYYMMDDTHHMM). Empty (the default): the first CLI build this action works with; latest works once the next Viaalink CLI release (after 3.2.6) is out.'
+    description: 'Viaalink CLI to install: latest, a release tag (vX.Y.Z) or a nightly tag (vX.Y.Z-nightly.YYYYMMDDTHHMM). Empty (the default): latest, the newest Viaalink CLI release.'
     default: ''
 
   timeout-minutes:
@@ -115,10 +115,10 @@ runs:
         INPUT_INTERFACE: ${{ inputs.interface }}
         INPUT_TUNNEL_NAME: ${{ inputs.tunnel-name }}
         INPUT_CLI_VERSION: ${{ inputs.cli-version }}
-        # What an empty cli-version installs: the first CLI build this action
-        # works with (3.2.6 can't publish the terminal socket). The only place
-        # this pin lives; the install steps take the resolved value.
-        DEFAULT_CLI_VERSION: 'v3.2.6-nightly.20261109T1503'
+        # What an empty cli-version installs: the newest Viaalink CLI release
+        # (4.0.0 or later). The only place this default lives; the install
+        # steps take the resolved value.
+        DEFAULT_CLI_VERSION: 'latest'
         INPUT_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
         INPUT_EXPOSE: ${{ inputs.expose }}
         INPUT_MODE: ${{ inputs.mode }}
